@@ -1,7 +1,4 @@
-﻿# CMakeList.txt: ThreadPool 的 CMake 项目，在此处包括源代码并定义
-# 项目特定的逻辑。
-#
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.12)
 
 # 如果支持，请为 MSVC 编译器启用热重载。
 if (POLICY CMP0141)
@@ -9,13 +6,48 @@ if (POLICY CMP0141)
   set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
 endif()
 
-project ("ThreadPool")
+set (PROJECT_NAME "ThreadPool")
 
-# 将源代码添加到此项目的可执行文件。
-add_executable (ThreadPool "ThreadPool.cpp" "ThreadPool.h")
+project (${PROJECT_NAME})
 
-if (CMAKE_VERSION VERSION_GREATER 3.12)
-  set_property(TARGET ThreadPool PROPERTY CXX_STANDARD 20)
+option(BUILD_TEST "Enable test compilation" ON)
+option(BUILD_EXAMPLE "Enable example compilation" ON)
+option(ENABLE_DEBUG "Enable debug logging" OFF)
+
+add_library(${PROJECT_NAME} INTERFACE)
+target_include_directories(${PROJECT_NAME} INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
+if (BUILD_EXAMPLE)
+	add_subdirectory(example)
 endif()
 
-# TODO: 如有需要，请添加测试并安装目标。
+if (BUILD_TEST) 
+  message(STATUS "Test compilation enabled")
+  target_compile_definitions(${PROJECT_NAME} INTERFACE TEST_INTERFACE)
+
+  include(FetchContent)
+  FetchContent_Declare(
+	googletest
+	GIT_REPOSITORY https://github.com/google/googletest.git
+	GIT_TAG v1.14.0
+  )
+
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  enable_testing()
+  add_subdirectory(test)
+endif()
+
+if (ENABLE_DEBUG)
+  message(STATUS "Debug option enabled. Defining DEBUG macro.")
+  target_compile_definitions(${PROJECT_NAME} INTERFACE THREADPOOL_DEBUG)
+ endif()
+
+if (CMAKE_VERSION VERSION_GREATER 3.12)
+  set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 20)
+endif()
+
+
