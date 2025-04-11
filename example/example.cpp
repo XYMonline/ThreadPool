@@ -15,36 +15,55 @@ void simple_task(int id, std::chrono::milliseconds sleep_time = 100ms) {
 void basic_usage_example() {
     std::cout << "\n=== Basic ===\n";
 
-    // 创建默认线程池
-    leo::thread_pool<> pool(4); // 4个线程
+    std::atomic_int counter{ 0 };
 
-    // 提交不需要返回值的任务
-    for (int i = 0; i < 10; ++i) {
-        pool.submit([i]() {
-            simple_task(i);
+    {
+        // 创建默认线程池
+        leo::thread_pool<> pool(4); // 4个线程
+
+        auto res = pool.submit([] {
+            throw std::runtime_error("Error in task");
             });
+
+        try {
+			res.get(); // 等待任务完成并获取结果
+		}
+        catch (const std::exception& e) {
+            std::cout << std::format("Caught exception: {}\n", e.what());
+        }
+
+        // 提交不需要返回值的任务
+        for (int i = 0; i < 10; ++i) {
+            pool.submit([i, &counter]() {
+                simple_task(i);
+                counter.fetch_add(1);
+                });
+        }
+
+        // 提交有返回值的任务
+        auto future = pool.submit([&counter]() {
+            std::this_thread::sleep_for(200ms);
+            counter.fetch_add(1);
+            return 42;
+            });
+
+        // 等待并获取结果
+        int result = future.get();
+        std::cout << std::format("Task returned: {}\n", result);
+
+        // 提交带参数的任务
+        auto future2 = pool.submit([&counter](int a, int b) {
+            std::this_thread::sleep_for(150ms);
+            counter.fetch_add(1);
+            return a + b;
+            }, 10, 32);
+
+        std::cout << std::format("Sum task returned: {}\n", future2.get());
+
+        // 等待所有任务完成
+        pool.wait_all();
     }
-
-    // 提交有返回值的任务
-    auto future = pool.submit([]() {
-        std::this_thread::sleep_for(200ms);
-        return 42;
-        });
-
-    // 等待并获取结果
-    int result = future.get();
-    std::cout << std::format("Task returned: {}\n", result);
-
-    // 提交带参数的任务
-    auto future2 = pool.submit([](int a, int b) {
-        std::this_thread::sleep_for(150ms);
-        return a + b;
-        }, 10, 32);
-
-    std::cout << std::format("Sum task returned: {}\n", future2.get());
-
-    // 等待所有任务完成
-    std::this_thread::sleep_for(1s);
+    std::cout << std::format("{} tasks finished", counter.load());
 }
 
 // 示例2：动态线程池
@@ -232,14 +251,182 @@ void parallel_computation_example() {
         size, total, duration.count());
 }
 
+// 示例7：任务取消
+void cancellation_example() {
+    std::cout << "\n=== Task Cancellation ===\n";
+
+    leo::thread_pool<> pool(2);
+
+    // 基础取消示例
+    {
+        std::cout << "Basic cancellation example:\n";
+
+        leo::thread_pool pool(1);
+
+        // 创建取消令牌
+        auto token1 = pool.create_token();
+        auto token2 = pool.create_token();
+
+        auto res1 = pool.submit_cancelable(token1, [] {
+			std::this_thread::sleep_for(200ms);
+            std::cout << "Task1 complete\n";
+            });
+
+        auto res2 = pool.submit_cancelable(token2, [] {
+            std::this_thread::sleep_for(200ms);
+            std::cout << "Task2 complete\n";
+            });
+
+		token2->cancel(); // 取消第二个任务
+
+        try {
+			res1.get(); // 等待任务完成并获取结果
+		}
+        catch (const std::exception& e) {
+            std::cout << std::format("Task1 caught exception: {}\n", e.what());
+        }
+
+        try {
+			res2.get(); // 等待任务完成并获取结果
+        }
+        catch (const std::exception& e) {
+			std::cout << std::format("Task2 caught exception: {}\n", e.what());
+        }
+    }
+
+    // 多个任务共享一个取消令牌示例
+    {
+        std::cout << "\nMultiple tasks with shared token example:\n";
+
+        auto token = pool.create_token();
+
+        // 提交多个相关任务
+        std::vector<std::future<int>> futures;
+        for (int i = 0; i < 5; ++i) {
+            futures.push_back(pool.submit_cancelable(token, [i]() {
+                std::cout << "Task " << i << " started\n";
+                std::this_thread::sleep_for(800ms - i * 100ms);
+                std::cout << "Task " << i << " completed\n";
+                return i * 10;
+                }));
+        }
+
+        // 短暂等待后取消所有任务
+        std::this_thread::sleep_for(300ms);
+        std::cout << "Cancelling all remaining tasks...\n";
+        token->cancel();
+
+        // 尝试获取所有结果
+        for (int i = 0; i < futures.size(); ++i) {
+            try {
+                int result = futures[i].get();
+                std::cout << "Task " << i << " result: " << result << "\n";
+            }
+            catch (const std::exception& e) {
+                std::cout << "Task " << i << " cancelled: " << e.what() << "\n";
+            }
+        }
+    }
+
+    // 优先级取消示例
+    {
+        std::cout << "\nPriority with cancellation example:\n";
+
+        leo::thread_pool<leo::ThreadPoolPolicy::PRIORITY> priority_pool(2);
+        auto token = priority_pool.create_token();
+
+        // 提交低优先级可取消任务
+        std::vector<std::future<void>> low_priority_tasks;
+        for (int i = 0; i < 5; ++i) {
+            low_priority_tasks.push_back(priority_pool.submit_cancelable(1, token, [i]() {
+                std::cout << "Low priority task " << i << " running\n";
+                std::this_thread::sleep_for(300ms);
+                std::cout << "Low priority task " << i << " completed\n";
+                }));
+        }
+
+        // 取消低优先级任务
+        std::cout << "Cancelling low priority tasks...\n";
+        token->cancel();
+
+        // 提交高优先级任务（不可取消）
+        std::vector<std::future<void>> high_priority_tasks;
+        for (int i = 0; i < 3; ++i) {
+            high_priority_tasks.push_back(priority_pool.submit(10, [i]() {
+                std::cout << "High priority task " << i << " running\n";
+                std::this_thread::sleep_for(200ms);
+                std::cout << "High priority task " << i << " completed\n";
+                }));
+        }
+
+        // 等待所有高优先级任务完成
+        for (auto& task : high_priority_tasks) {
+            task.wait();
+        }
+
+        std::cout << "All high priority tasks completed\n";
+    }
+
+    // 条件取消示例
+    {
+        std::cout << "\nConditional cancellation example:\n";
+
+        auto token = pool.create_token();
+
+        // 启动一个监控线程，在满足条件时取消任务
+        std::thread monitor_thread([token]() {
+            std::cout << "Monitor thread started\n";
+
+            // 模拟某种外部条件触发
+            std::this_thread::sleep_for(500ms);
+
+            std::cout << "External condition triggered, cancelling tasks\n";
+            token->cancel();
+            });
+
+        // 提交一些长时间运行的任务
+        std::vector<std::future<int>> results;
+        for (int i = 0; i < 3; ++i) {
+            results.push_back(pool.submit_cancelable(token, [i]() {
+                std::cout << "Processing batch " << i << "\n";
+
+                int sum = 0;
+                for (int j = 0; j < 10; ++j) {
+                    std::this_thread::sleep_for(100ms);
+                    sum += j;
+                    std::cout << "Batch " << i << " progress: " << (j + 1) * 10 << "%\n";
+                }
+
+                return sum;
+                }));
+        }
+
+        // 尝试收集结果
+        for (int i = 0; i < results.size(); ++i) {
+            try {
+                std::cout << "Batch " << i << " result: " << results[i].get() << "\n";
+            }
+            catch (const std::exception& e) {
+                std::cout << "Batch " << i << " cancelled: " << e.what() << "\n";
+            }
+        }
+
+        // 等待监控线程完成
+        if (monitor_thread.joinable()) {
+            monitor_thread.join();
+        }
+    }
+}
+
 int main() {
     // 运行所有示例
-    basic_usage_example();
-    dynamic_pool_example();
-    priority_tasks_example();
-    work_stealing_example();
-    combined_strategy_example();
-    parallel_computation_example();
+    //basic_usage_example();
+    //dynamic_pool_example();
+    //priority_tasks_example();
+    //work_stealing_example();
+    //combined_strategy_example();
+    //parallel_computation_example();
+	cancellation_example();
 
     return 0;
 }

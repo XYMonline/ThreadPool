@@ -18,6 +18,24 @@ using std::chrono_literals::operator""ms;
 namespace leo {
 namespace chrono = std::chrono;
 
+class cancel_token {
+public:
+	cancel_token() : cancelled_(false) {}
+
+	bool is_cancelled() const {
+		return cancelled_.load();
+	}
+
+	void cancel() {
+		cancelled_.store(true);
+	}
+
+private:
+	std::atomic<bool> cancelled_;
+};
+
+using cancel_token_ptr = std::shared_ptr<cancel_token>;
+
 enum ThreadPoolPolicy {
 	DEFAULT							= 0,									// static
 	DYNAMIC							= 1,									// use dynamic pool size
@@ -53,6 +71,7 @@ public:
 				id);
 			worker->start();
 			threads_.emplace(id, std::move(worker));
+			thread_count_.fetch_add(1);
 		}
 	}
 
@@ -69,17 +88,38 @@ public:
 
 	template <typename Func, typename... Args>
 	auto submit(Func&& func, Args&&... args) -> std::future<decltype(func(args...))> {
-		return submit_impl(0, std::forward<Func>(func), std::forward<Args>(args)...);
+		return submit_impl(0, nullptr, std::forward<Func>(func), std::forward<Args>(args)...);
 	}
 
 	template <typename Func, typename... Args>
 	auto submit(priority_type priority, Func&& func, Args&&... args) -> std::future<decltype(func(args...))> {
 		if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-			return submit_impl(priority, std::forward<Func>(func), std::forward<Args>(args)...);
+			return submit_impl(priority, nullptr, std::forward<Func>(func), std::forward<Args>(args)...);
 		}
 		else {
-			return submit_impl(0, std::forward<Func>(func), std::forward<Args>(args)...);
+			return submit_impl(0, nullptr, std::forward<Func>(func), std::forward<Args>(args)...);
 		}
+	}
+
+	template <typename Func, typename... Args>
+	auto submit_cancelable(cancel_token_ptr token, Func&& func, Args&&... args)
+		-> std::future<decltype(func(args...))> {
+		return submit_impl(0, std::move(token), std::forward<Func>(func), std::forward<Args>(args)...);
+	}
+
+	template <typename Func, typename... Args>
+	auto submit_cancelable(priority_type priority, cancel_token_ptr token, Func&& func, Args&&... args)
+		-> std::future<decltype(func(args...))> {
+		if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
+			return submit_impl(priority, std::move(token), std::forward<Func>(func), std::forward<Args>(args)...);
+		}
+		else {
+			return submit_impl(0, std::move(token), std::forward<Func>(func), std::forward<Args>(args)...);
+		}
+	}
+
+	cancel_token_ptr create_token() {
+		return std::make_shared<cancel_token>();
 	}
 
 	void destroy() {
@@ -94,23 +134,44 @@ public:
 	}
 
 	size_t get_pool_size() const {
-		return threads_.size();
+		return thread_count_;
+	}
+
+	void wait_all() {
+		std::unique_lock<std::mutex> lock(pool_mtx_);
+		pool_cv_.wait(lock, [this] { return remaining_tasks_ == 0; });
 	}
 
 private:
 	struct warpped_task {
-		std::function<void()> task;
-		priority_type priority;
+		std::function<void()> task_;
+		priority_type priority_;
+		cancel_token_ptr cancel_ptr_;
 
-		explicit warpped_task(std::function<void()> t = nullptr, priority_type p = 0)
-			: task(std::move(t)) , priority(p) { }
+		explicit warpped_task(std::function<void()> t = nullptr, priority_type p = 0, cancel_token_ptr cancel_ptr = nullptr)
+			: task_(std::move(t)), priority_(p), cancel_ptr_(cancel_ptr) { }
 
 		bool operator<(const warpped_task& other) const {
-			return priority < other.priority; 
+			return priority_ < other.priority_; 
 		}
 
 		bool operator>(const warpped_task& other) const {
-			return priority > other.priority;
+			return priority_ > other.priority_;
+		}
+
+		bool is_cancelled() const {
+			return cancel_ptr_ && cancel_ptr_->is_cancelled();
+		}
+
+		void exec() {
+			if (is_cancelled()) {
+				if (cancel_ptr_) {
+					task_();
+				}
+			}
+			else {
+				task_();
+			}
 		}
 	};
 
@@ -139,7 +200,7 @@ private:
 		}
 
 		bool pop(task_type& task) {
-			task.task = nullptr;
+			task.task_ = nullptr;
 			std::lock_guard<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
 				if (!priority_tasks_->empty()) {
@@ -153,7 +214,7 @@ private:
 					normal_tasks_->pop();
 				}
 			}
-			return task.task != nullptr;
+			return task.task_ != nullptr;
 		}
 
 		bool empty() const {
@@ -224,7 +285,7 @@ private:
 			return id_;
 		}
 
-		auto size() const {
+		auto queue_size() const {
 			return queue_.size();
 		}
 
@@ -235,8 +296,7 @@ private:
 				if (queue_.empty()) {
 					return false;
 				}
-				queue_.pop(task);
-				return true;
+				return queue_.pop(task);
 			}
 			return false;
 		}
@@ -259,7 +319,7 @@ private:
 
 		if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
 			std::unique_lock lock(pool_mtx_);
-			auto victim_id = std::uniform_int_distribution<size_t>(0, threads_.size() - 1)(rng);
+			auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
 			auto it = std::next(threads_.begin(), victim_id);
 			if (it->first != worker.get_id()) {
 				if (it->second->try_steal(task)) {
@@ -282,7 +342,9 @@ private:
 			if (!running_) {
 				// exit after task is done
 				if (got_task) { 
-					task.task();
+					task.exec();
+					remaining_tasks_.fetch_sub(1);
+					pool_cv_.notify_all();
 				}
 				break;
 			}
@@ -291,7 +353,10 @@ private:
 				if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
 					worker.wait_for(thread_step_, running_);
 					if (chrono::high_resolution_clock::now() - idle_since > thread_timeout_) {
-						break;
+						std::unique_lock<std::mutex> lock(pool_mtx_);
+						if (thread_count_ > 1 && worker.queue_size() == 0) {
+							break;
+						}
 					}
 				}
 				else {
@@ -301,12 +366,15 @@ private:
 			}
 
 			idle_threads_.fetch_sub(1);
-			task.task();
+			task.exec();
+			remaining_tasks_.fetch_sub(1);
+			pool_cv_.notify_all();
 			idle_since = chrono::high_resolution_clock::now();
 			idle_threads_.fetch_add(1);
 		}
 
 		std::unique_lock<std::mutex> lock(pool_mtx_);
+		thread_count_.fetch_sub(1);
 		threads_.erase(worker.get_id());
 		idle_threads_.fetch_sub(1);
 		if (threads_.empty()) {
@@ -315,18 +383,35 @@ private:
 	}
 
 	template <typename Func, typename... Args>
-	auto submit_impl(priority_type priority, Func&& func, Args&&... args) -> std::future<decltype(func(args...))> {
+	auto submit_impl(priority_type priority, cancel_token_ptr token, Func&& func, Args&&... args) -> std::future<decltype(func(args...))> {
 		static std::mt19937 rng(std::random_device{}());
 		using return_type = decltype(func(args...));
-		auto task = std::make_shared<std::packaged_task<return_type()>>(
-			std::bind(std::forward<Func>(func), std::forward<Args>(args)...)
-		);
-		warpped_task wrapped{ [task]() { (*task)(); }, priority };
+		std::shared_ptr<std::packaged_task<return_type()>> task;
+
+		if (token) {
+			task = std::make_shared<std::packaged_task<return_type()>>(
+				[func = std::forward<Func>(func),
+				args_tuple = std::make_tuple(std::forward<Args>(args)...),
+				token]() -> return_type {
+					if (token && token->is_cancelled()) {
+						throw std::runtime_error("The task was canceled.");
+					}
+					return std::apply(func, args_tuple);
+				}
+			);
+		}
+		else {
+			task = std::make_shared<std::packaged_task<return_type()>>(
+				std::bind(std::forward<Func>(func), std::forward<Args>(args)...)
+			);
+		}
+
+		warpped_task wrapped{ [task]() { (*task)(); }, priority, token };
 		auto res = task->get_future();
 
 		bool need_new_thread = false;
 		if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
-			need_new_thread = idle_threads_ == 0 && threads_.size() < std::thread::hardware_concurrency();
+			need_new_thread = idle_threads_ == 0 && thread_count_ < std::thread::hardware_concurrency();
 		}
 
 		if (need_new_thread) {
@@ -340,29 +425,16 @@ private:
 				std::unique_lock<std::mutex> lock(pool_mtx_);
 				threads_.emplace(id, std::move(worker));
 			}
+			thread_count_.fetch_add(1);
 		}
 		else {
 			std::unique_lock<std::mutex> lock(pool_mtx_);
-			if (!threads_.empty()) {
-				auto it = std::next(threads_.begin(),
-					std::uniform_int_distribution<size_t>(0, threads_.size() - 1)(rng));
-				it->second->push(std::move(wrapped));
-			}
-			else {
-				lock.unlock();
-				auto id = thread_id_gen_.fetch_add(1);
-				auto worker = std::make_unique<wrapped_thread>(
-					std::bind(&thread_pool::worker_func, this, std::placeholders::_1),
-					id);
-				worker->push(std::move(wrapped));
-				worker->start();
-				{
-					std::unique_lock<std::mutex> lock2(pool_mtx_);
-					threads_.emplace(id, std::move(worker));
-				}
-			}
+			auto it = std::next(threads_.begin(),
+				std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng));
+			it->second->push(std::move(wrapped));
 		}
 
+		remaining_tasks_.fetch_add(1);
 		return res;
 	}
 
@@ -374,8 +446,11 @@ private:
 	std::atomic<bool>											running_{ true };
 	std::atomic<size_t>											thread_id_gen_{ 0 };
 	std::atomic<size_t>											idle_threads_{ 0 };
+	std::atomic<size_t>											thread_count_{ 0 };
+	std::atomic<size_t>											remaining_tasks_{ 0 };
 	const chrono::milliseconds									thread_timeout_;
 	const chrono::milliseconds									thread_step_;
 };
 
 }; // namespace leo
+
