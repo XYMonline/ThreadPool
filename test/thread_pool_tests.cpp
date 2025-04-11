@@ -316,9 +316,204 @@ TEST(ThreadPoolTest, ExceptionHandling) {
     EXPECT_EQ(future2.get(), 2);
 }
 
+// 测试任务取消功能
+TEST(ThreadPoolTest, TaskCancellation) {
+    thread_pool<> pool(4);
+
+    // 创建取消令牌
+    auto token = pool.create_token();
+    std::atomic<bool> task_executed{ false };
+
+    // 提交可取消任务
+    auto future = pool.submit_cancelable(token, [&task_executed]() {
+        std::this_thread::sleep_for(500ms);
+        task_executed = true;
+        return 42;
+        });
+
+    // 立即取消任务
+    token->cancel();
+
+    // 验证任务被取消
+    try {
+        future.get();
+        FAIL() << "应该抛出异常";
+    }
+    catch (const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(), "The task was canceled.");
+    }
+
+    // 给足够时间让任务可能执行完成
+    std::this_thread::sleep_for(1s);
+
+    // 验证任务没有实际执行
+    EXPECT_FALSE(task_executed);
+}
+
+// 测试取消令牌可以取消多个任务
+TEST(ThreadPoolTest, CancelMultipleTasks) {
+    thread_pool<> pool(4);
+    auto token = pool.create_token();
+
+    std::atomic<int> executed_count{ 0 };
+    std::vector<std::future<void>> futures;
+
+    // 提交5个共享同一个取消令牌的任务
+    for (int i = 0; i < 10; ++i) {
+        futures.push_back(pool.submit_cancelable(token, [&executed_count, i]() {
+            std::this_thread::sleep_for(300ms);
+            executed_count.fetch_add(1);
+            }));
+    }
+
+    // 短暂延迟后取消所有任务
+    std::this_thread::sleep_for(50ms);
+    token->cancel();
+
+    // 验证所有future都抛出取消异常
+    int exception_count = 0;
+    for (auto& f : futures) {
+        try {
+            f.get();
+        }
+        catch (const std::runtime_error& e) {
+            exception_count++;
+        }
+    }
+
+    // 验证大部分任务都被取消了
+    EXPECT_GE(exception_count, 5);
+
+    // 验证实际执行的任务数量很少
+    std::this_thread::sleep_for(500ms); // 给时间让任何已经开始的任务完成
+    EXPECT_LE(executed_count, 5);
+}
+
+// 测试带优先级的任务取消
+TEST(ThreadPoolTest, PriorityCancellation) {
+    thread_pool<ThreadPoolPolicy::PRIORITY> pool(2);
+
+    auto token = pool.create_token();
+    std::atomic<int> executed_high{ 0 };
+    std::atomic<int> executed_low{ 0 };
+
+    // 提交一些低优先级的可取消任务
+    for (int i = 0; i < 10; ++i) {
+        pool.submit_cancelable(1, token, [&executed_low]() {
+            std::this_thread::sleep_for(200ms);
+            executed_low.fetch_add(1);
+            });
+    }
+
+    // 提交一些高优先级的不可取消任务
+    for (int i = 0; i < 3; ++i) {
+        pool.submit(10, [&executed_high]() {
+            std::this_thread::sleep_for(100ms);
+            executed_high.fetch_add(1);
+            });
+    }
+
+    // 取消低优先级任务
+    token->cancel();
+
+    // 等待所有任务处理完毕
+    std::this_thread::sleep_for(500ms);
+
+    // 验证高优先级任务全部执行，低优先级任务被取消
+	EXPECT_EQ(executed_high, 3); // 所有高优先级任务应该完成
+    EXPECT_LT(executed_low, 3); // 大多数低优先级任务应该被取消
+}
+
+// 测试任务开始执行后不会被取消
+TEST(ThreadPoolTest, TaskStartedNotCancelled) {
+    thread_pool<> pool(1); // 只使用一个线程确保任务按顺序执行
+
+    auto token = pool.create_token();
+    std::atomic<bool> task_started{ false };
+    std::atomic<bool> task_completed{ false };
+    std::mutex wait_mutex;
+    std::condition_variable wait_cv;
+
+    // 提交一个可控制的长时间运行任务
+    auto future = pool.submit_cancelable(token, [&]() {
+        task_started = true;
+
+        // 通知测试线程任务已开始
+        wait_cv.notify_one();
+
+        // 模拟执行一段时间
+        std::this_thread::sleep_for(300ms);
+
+        task_completed = true;
+        return 100;
+        });
+
+    // 等待任务开始执行
+    {
+        std::unique_lock<std::mutex> lock(wait_mutex);
+        wait_cv.wait_for(lock, 1s, [&] { return task_started.load(); });
+    }
+
+    // 确认任务已经开始执行
+    EXPECT_TRUE(task_started);
+
+    // 尝试取消任务，但此时任务已经在执行中
+    token->cancel();
+
+    // 验证任务正常完成
+    try {
+        int result = future.get();
+        EXPECT_EQ(result, 100);
+        EXPECT_TRUE(task_completed);
+    }
+    catch (const std::exception& e) {
+        FAIL() << "不应该抛出异常: " << e.what();
+    }
+}
+
+// 测试在线程池中多个不同的取消令牌可以独立工作
+TEST(ThreadPoolTest, MultipleCancellationTokens) {
+    thread_pool<> pool(4);
+
+    auto token1 = pool.create_token();
+    auto token2 = pool.create_token();
+
+    std::atomic<int> count1{ 0 };
+    std::atomic<int> count2{ 0 };
+
+    std::vector<std::future<void>> futures1;
+    std::vector<std::future<void>> futures2;
+    for (int i = 0; i < 10; ++i) {
+        if (i % 2) {
+			// 使用token1的任务
+			futures1.push_back(pool.submit_cancelable(token1, [&count1]() {
+				std::this_thread::sleep_for(200ms);
+				count1.fetch_add(1);
+				}));
+		}
+        else {
+            // 使用token2的任务
+            futures2.push_back(pool.submit_cancelable(token2, [&count2]() {
+                std::this_thread::sleep_for(200ms);
+                count2.fetch_add(1);
+                }));
+        }
+    }
+
+    // 仅取消token1的任务
+    token1->cancel();
+
+    // 等待所有任务处理完毕
+    std::this_thread::sleep_for(1000ms);
+
+    // 验证token1的任务被取消，token2的任务正常执行
+    EXPECT_LT(count1, 3); // token1的大多数任务应该被取消
+    EXPECT_EQ(count2, 5); // token2的任务应该全部完成
+}
+
 // 测试大量任务
 TEST(ThreadPoolTest, LargeNumberOfTasks) {
-    thread_pool<> pool(4);
+    thread_pool<leo::ALL> pool(4);
 
     constexpr int num_tasks = 1000;
     std::vector<std::future<int>> futures;
