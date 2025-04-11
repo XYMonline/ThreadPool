@@ -30,6 +30,27 @@ TEST(ThreadPoolTest, BasicFunctionality) {
     EXPECT_EQ(counter.load(), 10);
 }
 
+TEST(ThreadPoolTest, WaitAll) {
+    leo::thread_pool<> pool(4); // 创建一个包含4个线程的线程池
+
+    std::atomic<int> counter{ 0 };
+    {
+        // 提交10个任务，每个任务将计数器加1
+        for (int i = 0; i < 10; ++i) {
+            pool.submit([&counter]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                counter.fetch_add(1);
+                });
+        }
+
+        // 等待所有任务完成
+        pool.wait_all();
+    }
+
+    // 确认所有任务都已完成
+    EXPECT_EQ(counter.load(), 10);
+}
+
 // 测试返回值功能
 TEST(ThreadPoolTest, ReturnValue) {
     thread_pool<> pool(4);
@@ -44,7 +65,7 @@ TEST(ThreadPoolTest, ReturnValue) {
 
 // 测试动态线程池
 TEST(ThreadPoolTest, DynamicThreadPool) {
-    thread_pool<ThreadPoolPolicy::DYNAMIC> pool(2, 1s, 100ms); // 从4减少到2个初始线程
+    thread_pool<ThreadPoolPolicy::DYNAMIC> pool(2, 2s, 100ms); // 从4减少到2个初始线程
 
     std::atomic<int> counter{ 0 };
     size_t initial_pool_size = pool.get_pool_size();
@@ -66,9 +87,7 @@ TEST(ThreadPoolTest, DynamicThreadPool) {
     EXPECT_GT(expanded_pool_size, initial_pool_size); // 线程数应该增加
 
     // 等待所有任务完成
-    while (counter.load() < 4) {
-        std::this_thread::sleep_for(10ms);
-    }
+    pool.wait_all();
 
     // 再提交一批任务
     for (int i = 0; i < 16; ++i) {
@@ -79,12 +98,10 @@ TEST(ThreadPoolTest, DynamicThreadPool) {
     }
 
     // 等待所有任务完成
-    while (counter.load() < 20) {
-        std::this_thread::sleep_for(10ms);
-    }
+    pool.wait_all();
 
     // 等待线程超时退出
-    std::this_thread::sleep_for(5s);
+    std::this_thread::sleep_for(4s);
 
     // 确认任务都已完成且线程数量应该减少
     EXPECT_EQ(counter.load(), 20);
@@ -122,7 +139,7 @@ TEST(ThreadPoolTest, DynamicThreadPoolExpandAndContract) {
     }
 
     // 等待足够长的时间，让多余的线程超时退出
-    std::this_thread::sleep_for(5s);
+    std::this_thread::sleep_for(3s);
 
     // 线程池应该已经收缩
     EXPECT_LT(pool.get_pool_size(), peak_size);
@@ -131,7 +148,7 @@ TEST(ThreadPoolTest, DynamicThreadPoolExpandAndContract) {
 
 // 测试优先级任务
 TEST(ThreadPoolTest, PriorityTasks) {
-    thread_pool<ThreadPoolPolicy::PRIORITY> pool(4);
+    thread_pool<ThreadPoolPolicy::PRIORITY> pool(2);
 
     std::vector<int> execution_order;
     std::mutex order_mutex;
@@ -246,14 +263,14 @@ TEST(ThreadPoolTest, MixedPolicy) {
     // 提交不同优先级的任务
     for (int i = 0; i < task_groups; ++i) {
         pool.submit(1, [&counter, &execution_order, &order_mutex]() {
-            std::this_thread::sleep_for(10ms);
+            std::this_thread::sleep_for(20ms);
             std::lock_guard<std::mutex> lock(order_mutex);
             execution_order.push_back(1);
             counter.fetch_add(1);
             });
 
         pool.submit(3, [&counter, &execution_order, &order_mutex]() {
-            std::this_thread::sleep_for(10ms);
+            std::this_thread::sleep_for(20ms);
             std::lock_guard<std::mutex> lock(order_mutex);
             execution_order.push_back(3);
             counter.fetch_add(1);

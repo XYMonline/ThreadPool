@@ -17,34 +17,41 @@ void basic_usage_example() {
 
     // 创建默认线程池
     leo::thread_pool<> pool(4); // 4个线程
+    std::atomic_int counter{ 0 };
 
-    // 提交不需要返回值的任务
-    for (int i = 0; i < 10; ++i) {
-        pool.submit([i]() {
-            simple_task(i);
+    {
+        // 提交不需要返回值的任务
+        for (int i = 0; i < 10; ++i) {
+            pool.submit([i, &counter]() {
+                simple_task(i);
+                counter.fetch_add(1);
+                });
+        }
+
+        // 提交有返回值的任务
+        auto future = pool.submit([&counter]() {
+            std::this_thread::sleep_for(200ms);
+            counter.fetch_add(1);
+            return 42;
             });
+
+        // 等待并获取结果
+        int result = future.get();
+        std::cout << std::format("Task returned: {}\n", result);
+
+        // 提交带参数的任务
+        auto future2 = pool.submit([&counter](int a, int b) {
+            std::this_thread::sleep_for(150ms);
+            counter.fetch_add(1);
+            return a + b;
+            }, 10, 32);
+
+        std::cout << std::format("Sum task returned: {}\n", future2.get());
+
+        // 等待所有任务完成
+        pool.wait_all();
     }
-
-    // 提交有返回值的任务
-    auto future = pool.submit([]() {
-        std::this_thread::sleep_for(200ms);
-        return 42;
-        });
-
-    // 等待并获取结果
-    int result = future.get();
-    std::cout << std::format("Task returned: {}\n", result);
-
-    // 提交带参数的任务
-    auto future2 = pool.submit([](int a, int b) {
-        std::this_thread::sleep_for(150ms);
-        return a + b;
-        }, 10, 32);
-
-    std::cout << std::format("Sum task returned: {}\n", future2.get());
-
-    // 等待所有任务完成
-    std::this_thread::sleep_for(1s);
+    std::cout << std::format("{} tasks finished", counter.load());
 }
 
 // 示例2：动态线程池

@@ -53,6 +53,7 @@ public:
 				id);
 			worker->start();
 			threads_.emplace(id, std::move(worker));
+			thread_count_.fetch_add(1);
 		}
 	}
 
@@ -94,7 +95,12 @@ public:
 	}
 
 	size_t get_pool_size() const {
-		return threads_.size();
+		return thread_count_;
+	}
+
+	void wait_all() {
+		std::unique_lock<std::mutex> lock(pool_mtx_);
+		pool_cv_.wait(lock, [this] { return remaining_tasks_ == 0; });
 	}
 
 private:
@@ -235,8 +241,7 @@ private:
 				if (queue_.empty()) {
 					return false;
 				}
-				queue_.pop(task);
-				return true;
+				return queue_.pop(task);
 			}
 			return false;
 		}
@@ -259,7 +264,7 @@ private:
 
 		if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
 			std::unique_lock lock(pool_mtx_);
-			auto victim_id = std::uniform_int_distribution<size_t>(0, threads_.size() - 1)(rng);
+			auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
 			auto it = std::next(threads_.begin(), victim_id);
 			if (it->first != worker.get_id()) {
 				if (it->second->try_steal(task)) {
@@ -283,6 +288,8 @@ private:
 				// exit after task is done
 				if (got_task) { 
 					task.task();
+					remaining_tasks_.fetch_sub(1);
+					pool_cv_.notify_all();
 				}
 				break;
 			}
@@ -291,7 +298,10 @@ private:
 				if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
 					worker.wait_for(thread_step_, running_);
 					if (chrono::high_resolution_clock::now() - idle_since > thread_timeout_) {
-						break;
+						std::unique_lock<std::mutex> lock(pool_mtx_);
+						if (thread_count_ > 1 && !worker.size()) {
+							break;
+						}
 					}
 				}
 				else {
@@ -302,11 +312,14 @@ private:
 
 			idle_threads_.fetch_sub(1);
 			task.task();
+			remaining_tasks_.fetch_sub(1);
+			pool_cv_.notify_all();
 			idle_since = chrono::high_resolution_clock::now();
 			idle_threads_.fetch_add(1);
 		}
 
 		std::unique_lock<std::mutex> lock(pool_mtx_);
+		thread_count_.fetch_sub(1);
 		threads_.erase(worker.get_id());
 		idle_threads_.fetch_sub(1);
 		if (threads_.empty()) {
@@ -326,7 +339,7 @@ private:
 
 		bool need_new_thread = false;
 		if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
-			need_new_thread = idle_threads_ == 0 && threads_.size() < std::thread::hardware_concurrency();
+			need_new_thread = idle_threads_ == 0 && thread_count_ < std::thread::hardware_concurrency();
 		}
 
 		if (need_new_thread) {
@@ -340,29 +353,16 @@ private:
 				std::unique_lock<std::mutex> lock(pool_mtx_);
 				threads_.emplace(id, std::move(worker));
 			}
+			thread_count_.fetch_add(1);
 		}
 		else {
 			std::unique_lock<std::mutex> lock(pool_mtx_);
-			if (!threads_.empty()) {
-				auto it = std::next(threads_.begin(),
-					std::uniform_int_distribution<size_t>(0, threads_.size() - 1)(rng));
-				it->second->push(std::move(wrapped));
-			}
-			else {
-				lock.unlock();
-				auto id = thread_id_gen_.fetch_add(1);
-				auto worker = std::make_unique<wrapped_thread>(
-					std::bind(&thread_pool::worker_func, this, std::placeholders::_1),
-					id);
-				worker->push(std::move(wrapped));
-				worker->start();
-				{
-					std::unique_lock<std::mutex> lock2(pool_mtx_);
-					threads_.emplace(id, std::move(worker));
-				}
-			}
+			auto it = std::next(threads_.begin(),
+				std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng));
+			it->second->push(std::move(wrapped));
 		}
 
+		remaining_tasks_.fetch_add(1);
 		return res;
 	}
 
@@ -374,8 +374,11 @@ private:
 	std::atomic<bool>											running_{ true };
 	std::atomic<size_t>											thread_id_gen_{ 0 };
 	std::atomic<size_t>											idle_threads_{ 0 };
+	std::atomic<size_t>											thread_count_{ 0 };
+	std::atomic<size_t>											remaining_tasks_{ 0 };
 	const chrono::milliseconds									thread_timeout_;
 	const chrono::milliseconds									thread_step_;
 };
 
 }; // namespace leo
+
