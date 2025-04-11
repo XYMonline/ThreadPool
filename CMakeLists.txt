@@ -12,7 +12,6 @@ project (${PROJECT_NAME})
 
 option(BUILD_TEST "Enable test compilation" ON)
 option(BUILD_EXAMPLE "Enable example compilation" ON)
-option(ENABLE_DEBUG "Enable debug logging" OFF)
 
 add_library(${PROJECT_NAME} INTERFACE)
 target_include_directories(${PROJECT_NAME} INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -25,7 +24,6 @@ endif()
 
 if (BUILD_TEST) 
   message(STATUS "Test compilation enabled")
-  target_compile_definitions(${PROJECT_NAME} INTERFACE TEST_INTERFACE)
 
   include(FetchContent)
   FetchContent_Declare(
@@ -40,11 +38,6 @@ if (BUILD_TEST)
   enable_testing()
   add_subdirectory(test)
 endif()
-
-if (ENABLE_DEBUG)
-  message(STATUS "Debug option enabled. Defining DEBUG macro.")
-  target_compile_definitions(${PROJECT_NAME} INTERFACE THREADPOOL_DEBUG)
- endif()
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 20)

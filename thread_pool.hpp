@@ -12,11 +12,6 @@
 #include <thread>
 #include <unordered_map>
 
-#ifdef THREADPOOL_DEBUG
-#include <iostream>
-#include <format>
-#endif
-
 using std::chrono_literals::operator""s;
 using std::chrono_literals::operator""ms;
 
@@ -98,12 +93,6 @@ public:
 		pool_cv_.wait(lock, [this] { return threads_.empty(); });
 	}
 
-#ifdef TEST_INTERFACE
-	const auto& get_threads() const {
-		return threads_;
-	}
-#endif
-
 	size_t get_pool_size() const {
 		return threads_.size();
 	}
@@ -140,7 +129,7 @@ private:
 		}
 
 		void push(task_type&& task) {
-			std::lock_guard<std::mutex> lock(mtx_);
+			std::lock_guard<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
 				priority_tasks_->push(std::forward<task_type>(task));
 			}
@@ -151,7 +140,7 @@ private:
 
 		bool pop(task_type& task) {
 			task.task = nullptr;
-			std::lock_guard<std::mutex> lock(mtx_);
+			std::lock_guard<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
 				if (!priority_tasks_->empty()) {
 					task = priority_tasks_->top();
@@ -168,7 +157,7 @@ private:
 		}
 
 		bool empty() const {
-			std::lock_guard<std::mutex> lock(mtx_);
+			std::lock_guard<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
 				return priority_tasks_->empty();
 			}
@@ -178,7 +167,7 @@ private:
 		}
 
 		size_t size() const {
-			std::unique_lock<std::mutex> lock(mtx_);
+			std::unique_lock<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
 				return priority_tasks_->size();
 			}
@@ -190,7 +179,7 @@ private:
 	private:
 		std::unique_ptr<std::priority_queue<task_type, std::vector<task_type>, std::less<>>> priority_tasks_;
 		std::unique_ptr<std::queue<task_type>> normal_tasks_;
-		mutable std::mutex mtx_;
+		mutable std::mutex queue_mtx_;
 	};
 
 	class wrapped_thread {
@@ -207,7 +196,7 @@ private:
 		}
 
 		void push(task_type&& task) {
-			std::lock_guard<std::mutex> lock(mtx_);
+			std::lock_guard<std::mutex> lock(thread_mtx_);
 			queue_.push(std::forward<task_type>(task));
 			cv_.notify_one();
 		}
@@ -217,17 +206,17 @@ private:
 		}
 
 		void wait(const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(mtx_);
+			std::unique_lock<std::mutex> lock(thread_mtx_);
 			cv_.wait(lock, [this, &running] { return !queue_.empty() || !running; });
 		}
 
 		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(mtx_);
+			std::unique_lock<std::mutex> lock(thread_mtx_);
 			cv_.wait_for(lock, time, [this, &running] { return !queue_.empty() || !running; });
 		}
 
 		void notify() {
-			std::lock_guard<std::mutex> lock(mtx_);
+			std::lock_guard<std::mutex> lock(thread_mtx_);
 			cv_.notify_one();
 		}
 
@@ -242,7 +231,7 @@ private:
 		// provide a way to steal tasks from this thread
 		bool try_steal(task_type& task) {
 			if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
-				std::lock_guard<std::mutex> lock(mtx_);
+				std::lock_guard<std::mutex> lock(thread_mtx_);
 				if (queue_.empty()) {
 					return false;
 				}
@@ -255,7 +244,7 @@ private:
 	private:
 		wrapped_queue queue_;
 		size_t id_;
-		std::mutex mtx_;
+		std::mutex thread_mtx_;
 		std::condition_variable cv_;
 		thread_work func_;
 	};
@@ -302,9 +291,6 @@ private:
 				if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
 					worker.wait_for(thread_step_, running_);
 					if (chrono::high_resolution_clock::now() - idle_since > thread_timeout_) {
-#ifdef THREADPOOL_DEBUG
-						std::cout << std::format("Thread {} timeout, exiting...\n", worker.get_id());
-#endif
 						break;
 					}
 				}
@@ -320,9 +306,6 @@ private:
 			idle_threads_.fetch_add(1);
 		}
 
-#ifdef THREADPOOL_DEBUG
-		std::cout << std::format("Thread {} exiting...\n", worker.get_id());
-#endif
 		std::unique_lock<std::mutex> lock(pool_mtx_);
 		threads_.erase(worker.get_id());
 		idle_threads_.fetch_sub(1);
@@ -357,9 +340,6 @@ private:
 				std::unique_lock<std::mutex> lock(pool_mtx_);
 				threads_.emplace(id, std::move(worker));
 			}
-#ifdef THREADPOOL_DEBUG
-			std::cout << std::format("No idle thread, create new, {} thread(s) in pool now\n", threads_.size());
-#endif
 		}
 		else {
 			std::unique_lock<std::mutex> lock(pool_mtx_);
@@ -380,9 +360,6 @@ private:
 					std::unique_lock<std::mutex> lock2(pool_mtx_);
 					threads_.emplace(id, std::move(worker));
 				}
-#ifdef THREADPOOL_DEBUG
-				std::cout << std::format("Thread pool was empty, created new thread\n");
-#endif
 			}
 		}
 

@@ -2,6 +2,7 @@
 #include "../thread_pool.hpp"
 #include <atomic>
 #include <chrono>
+#include <unordered_set>
 #include <numeric>
 
 using namespace leo;
@@ -179,27 +180,36 @@ TEST(ThreadPoolTest, PriorityTasks) {
 // 测试工作窃取
 TEST(ThreadPoolTest, WorkStealing) {
     thread_pool<ThreadPoolPolicy::WORK_STEALING> pool(4);
-
-    std::atomic<int> counter{ 0 };
-
-    // 将所有任务提交到同一个线程
-    auto& thread = *pool.get_threads().begin()->second;
+    
+    std::atomic<int> counter{0};
+    std::atomic<int> thread_ids[20]{};
+    
+    // 创建任务，每个任务记录其执行线程ID
     for (int i = 0; i < 20; ++i) {
-        thread.push(thread_pool<ThreadPoolPolicy::WORK_STEALING>::task_type{
-            [&counter]() {
-                std::this_thread::sleep_for(5ms);
-                counter.fetch_add(1);
-            }
-            });
+        pool.submit([i, &counter, &thread_ids]() {
+            std::this_thread::sleep_for(10ms);
+            thread_ids[i] = std::hash<std::thread::id>{}(std::this_thread::get_id());
+            counter.fetch_add(1);
+        });
     }
-
+    
     // 等待所有任务完成
     while (counter.load() < 20) {
         std::this_thread::sleep_for(10ms);
     }
-
-    EXPECT_EQ(counter.load(), 20);
+    
+    // 检查是否有多个线程参与执行任务
+    std::unordered_set<int> unique_threads;
+    for (int i = 0; i < 20; ++i) {
+        if (thread_ids[i] != 0) {
+            unique_threads.insert(thread_ids[i]);
+        }
+    }
+    
+    // 工作窃取应该使多个线程参与处理任务
+    EXPECT_GT(unique_threads.size(), 1);
 }
+
 
 // 测试销毁线程池
 TEST(ThreadPoolTest, DestroyPool) {
