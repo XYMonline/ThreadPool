@@ -30,3 +30,10 @@
 [示例代码](example/example.cpp) 
 
 [测试](test/thread_pool_tests.cpp)
+
+## TODO
+
+- 优化任务入队逻辑
+- 实现更高效的工作窃取功能
+- 提供更多的测试
+- 添加`module`版本

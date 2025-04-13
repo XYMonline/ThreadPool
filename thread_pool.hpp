@@ -164,14 +164,7 @@ private:
 		}
 
 		void exec() {
-			if (is_cancelled()) {
-				if (cancel_ptr_) {
-					task_();
-				}
-			}
-			else {
-				task_();
-			}
+			task_();
 		}
 	};
 
