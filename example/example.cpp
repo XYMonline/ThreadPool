@@ -388,6 +388,31 @@ void cancellation_example() {
             }
         }
     }
+
+    // 协作式取消任务
+    {
+        leo::thread_pool pool(1);
+		auto token = pool.create_token();
+		auto res = pool.submit_cancelable(token, [token] {
+			std::println("Task started");
+			for (int i = 0; i < 10; ++i) {
+				token->check_cancel(); // 检查取消状态
+				std::this_thread::sleep_for(100ms);
+				std::println("Working... {}0%", i);
+			}
+			std::println("Task completed");
+			});
+		// 让任务有机会开始执行
+		std::this_thread::sleep_for(300ms);
+		// 取消任务
+		token->cancel();
+		try {
+			res.get(); // 等待任务完成并获取结果
+		}
+		catch (const std::exception& e) {
+			std::println("Task cancelled: {}", e.what());
+		}
+    }
 }
 
 int main() {

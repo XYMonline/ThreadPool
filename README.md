@@ -11,19 +11,14 @@
   - `WORK_STEALING`：支持线程间的任务窃取。
   - 组合策略：如 `DYNAMIC_PRIORITY`、`WORK_STEALING_PRIORITY` 等。
 
-- **任务提交**：
-  - 支持通过 `submit` 方法提交任务。
-  - 可选任务优先级（在启用 `PRIORITY` 策略时）。
+- **异步等待**
+  - 将任务提交到线程池时，线程池会返回一个future，可以通过`future::get`等待任务完成并获取结果。
+  - 支持使用`thread_pool::wait_all`方法等待线程池中的所有任务完成。
 
-- **动态线程管理**：
-  - 在启用 `DYNAMIC` 策略时，线程池会根据负载动态创建或销毁线程。
-
-- **工作窃取**：
-  - 在启用 `WORK_STEALING` 策略时，线程可以从其他线程队列中窃取任务以提高资源利用率。
-
-- **杂项**:
-  - 支持通过 `submit_cancelable` 提交可取消的任务，允许在任务开始执行之前取消任务。
-  - 提供 `wait_all` 等待所有任务完成。
+- **任务取消**：
+  - 创建可取消的任务：通过`thread_pool::create_token`方法生成一个token并使用`thread_pool::submit_cancelable`提交任务，在任务执行时会先检查任务是否被提交方取消。
+  - 取消任务后的处理：当任务被标记为取消时，包装后的任务会抛出`runtime_error`。任务提交方使用`future::get`获取任务结果时通过捕获异常的方式做任务被取消后的处理。
+  - 协作式取消：任务提交方可以通过捕获`cancel_token`并在任务执行过程中使用`cancel_token::check_cancel`检查任务是否被取消，并进行后续的处理。
 
 ## 使用方法
 

@@ -31,6 +31,12 @@ public:
 		cancelled_.store(true);
 	}
 
+	void check_cancel() const {
+		if (is_cancelled()) {
+			throw std::runtime_error("Operation was cancelled");
+		}
+	}
+
 private:
 	std::atomic<bool> cancelled_;
 };
@@ -213,20 +219,21 @@ private:
 		}
 
 		bool empty() const {
-			std::lock_guard<std::mutex> lock(queue_mtx_);
-			return std::visit([](auto& q) { return q.empty(); }, tasks_);
+			return std::visit([this](auto& q) { 
+				std::lock_guard<std::mutex> lock(queue_mtx_);
+				return q.empty(); 
+				}, tasks_);
 		}
 
 		size_t size() const {
-			std::unique_lock<std::mutex> lock(queue_mtx_);
-			return std::visit([](auto& q) {
-				return q.size();
+			return std::visit([this](auto& q) { 
+				std::unique_lock<std::mutex> lock(queue_mtx_);
+				return q.size(); 
 				}, tasks_);
 		}
 
 	private:
-		std::variant<std::priority_queue<task_type, std::vector<task_type>, std::less<>>,
-			std::queue<task_type>> tasks_;
+		std::variant<priority_queue_t, normal_queue_t> tasks_;
 		mutable std::mutex queue_mtx_;
 	};
 
