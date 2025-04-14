@@ -11,6 +11,7 @@
 #include <random>
 #include <thread>
 #include <unordered_map>
+#include <variant>
 
 using std::chrono_literals::operator""s;
 using std::chrono_literals::operator""ms;
@@ -164,38 +165,30 @@ private:
 		}
 
 		void exec() {
-			if (is_cancelled()) {
-				if (cancel_ptr_) {
-					task_();
-				}
-			}
-			else {
-				task_();
-			}
+			task_();
 		}
 	};
 
 	class wrapped_queue {
+		using priority_queue_t = std::priority_queue<task_type, std::vector<task_type>, std::less<>>;
+		using normal_queue_t = std::queue<task_type>;
 	public:
-		wrapped_queue()
-			: normal_tasks_(nullptr)
-			, priority_tasks_(nullptr)
-		{
+		wrapped_queue() {
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				priority_tasks_ = std::make_unique<std::priority_queue<task_type, std::vector<task_type>, std::less<>>>();
+				tasks_ = priority_queue_t{};
 			}
 			else {
-				normal_tasks_ = std::make_unique<std::queue<task_type>>();
+				tasks_ = normal_queue_t{};
 			}
 		}
 
 		void push(task_type&& task) {
 			std::lock_guard<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				priority_tasks_->push(std::forward<task_type>(task));
+				std::get<priority_queue_t>(tasks_).push(std::forward<task_type>(task));
 			}
 			else {
-				normal_tasks_->push(std::forward<task_type>(task));
+				std::get<normal_queue_t>(tasks_).push(std::forward<task_type>(task));
 			}
 		}
 
@@ -203,15 +196,17 @@ private:
 			task.task_ = nullptr;
 			std::lock_guard<std::mutex> lock(queue_mtx_);
 			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				if (!priority_tasks_->empty()) {
-					task = priority_tasks_->top();
-					priority_tasks_->pop();
+				auto& real_queue = std::get<priority_queue_t>(tasks_);
+				if (!real_queue.empty()) {
+					task = real_queue.top();
+					real_queue.pop();
 				}
 			}
 			else {
-				if (!normal_tasks_->empty()) {
-					task = std::move(normal_tasks_->front());
-					normal_tasks_->pop();
+				auto& real_queue = std::get<normal_queue_t>(tasks_);
+				if (!real_queue.empty()) {
+					task = std::move(real_queue.front());
+					real_queue.pop();
 				}
 			}
 			return task.task_ != nullptr;
@@ -219,27 +214,19 @@ private:
 
 		bool empty() const {
 			std::lock_guard<std::mutex> lock(queue_mtx_);
-			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				return priority_tasks_->empty();
-			}
-			else {
-				return normal_tasks_->empty();
-			}
+			return std::visit([](auto& q) { return q.empty(); }, tasks_);
 		}
 
 		size_t size() const {
 			std::unique_lock<std::mutex> lock(queue_mtx_);
-			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				return priority_tasks_->size();
-			}
-			else {
-				return normal_tasks_->size();
-			}
+			return std::visit([](auto& q) {
+				return q.size();
+				}, tasks_);
 		}
 
 	private:
-		std::unique_ptr<std::priority_queue<task_type, std::vector<task_type>, std::less<>>> priority_tasks_;
-		std::unique_ptr<std::queue<task_type>> normal_tasks_;
+		std::variant<std::priority_queue<task_type, std::vector<task_type>, std::less<>>,
+			std::queue<task_type>> tasks_;
 		mutable std::mutex queue_mtx_;
 	};
 

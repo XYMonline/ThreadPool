@@ -29,4 +29,11 @@
 
 [示例代码](example/example.cpp) 
 
-[测试](test/thread_pool_tests.cpp)
+[测试](test/thread_pool_tests.cpp) 部分测试可能出现失败的情况，原因可能是测试写的太严格或者线程池的实现问题，有空再仔细看看，大部分时候可以全部Pass。
+
+## TODO
+
+- 优化任务入队逻辑
+- 实现更高效的工作窃取功能
+- 提供更多的测试
+- 添加`module`版本

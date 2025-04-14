@@ -33,5 +33,5 @@ include(GoogleTest)
 gtest_discover_tests(${PROJECT_NAME})
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
-  set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 20)
+  set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 17)
 endif()
