@@ -29,7 +29,7 @@
 
 [示例代码](example/example.cpp) 
 
-[测试](test/thread_pool_tests.cpp)
+[测试](test/thread_pool_tests.cpp) 部分测试可能出现失败的情况，原因可能是测试写的太严格或者线程池的实现问题，有空再仔细看看，大部分时候可以全部Pass。
 
 ## TODO
 
