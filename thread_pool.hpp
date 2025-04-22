@@ -11,7 +11,6 @@
 #include <random>
 #include <thread>
 #include <unordered_map>
-#include <variant>
 
 using std::chrono_literals::operator""s;
 using std::chrono_literals::operator""ms;
@@ -64,21 +63,36 @@ public:
 
 	explicit thread_pool(uint32_t pool_size = std::thread::hardware_concurrency(), 
 		chrono::milliseconds timeout = 60s, 
-		chrono::milliseconds time_step = 1s
+		chrono::milliseconds time_step = 1s,
+		uint32_t max_size = std::thread::hardware_concurrency()
 	)
 		: thread_timeout_(timeout)
 		, thread_step_(time_step)
+		, max_threads_(max_size)
 	{
-		pool_size = std::min(pool_size, std::thread::hardware_concurrency());
+		available_slots_.reserve(max_size);
+		for (uint32_t i = max_size; i > 0; --i) {
+			available_slots_.push_back(i);
+		}
+		available_slots_.push_back(0);
+
+		if (pool_size > max_size) {
+			pool_size = max_size;
+		}
+
+		if (pool_size == 0) {
+			pool_size = std::thread::hardware_concurrency();
+		}
+
+		if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
+			threads_.reserve(std::max(pool_size, max_size));
+		}
 
 		for (uint32_t i = 0; i < pool_size; ++i) {
-			auto id = thread_id_gen_.fetch_add(1);
-			auto worker = std::make_unique<wrapped_thread>(
-				std::bind(&thread_pool::worker_func, this, std::placeholders::_1),
-				id);
-			worker->start();
-			threads_.emplace(id, std::move(worker));
-			thread_count_.fetch_add(1);
+			auto t = create_thread();
+			if (t) {
+				t->start();
+			}
 		}
 	}
 
@@ -131,13 +145,32 @@ public:
 
 	void destroy() {
 		running_ = false;
+		std::unique_lock<std::mutex> lock(pool_mtx_);
 
-		for (auto& [id, thread] : threads_) {
-			thread->notify();
+		for (auto& thread : threads_) {
+			if (thread) {
+				thread->notify();
+			}
 		}
 
+		pool_cv_.wait(lock, [this] { return thread_count_.load() == 0; });
+	}
+
+	// TODO
+	auto create_thread() {
 		std::unique_lock<std::mutex> lock(pool_mtx_);
-		pool_cv_.wait(lock, [this] { return threads_.empty(); });
+
+		if (thread_count_ < max_threads_) {
+			auto slot = available_slots_.back();
+			available_slots_.pop_back();
+			auto worker = std::make_unique<wrapped_thread>(
+				std::bind(&thread_pool::worker_func, this, std::placeholders::_1),
+				slot);
+			threads_.emplace_back(std::move(worker));
+			thread_count_.fetch_add(1);
+			return threads_.back().get();
+		}
+		return (wrapped_thread*)nullptr;
 	}
 
 	size_t get_pool_size() const {
@@ -171,78 +204,61 @@ private:
 		}
 
 		void exec() {
-			task_();
+			if (task_) {
+				task_();
+			}
 		}
 	};
 
 	class wrapped_queue {
+	public:
 		using priority_queue_t = std::priority_queue<task_type, std::vector<task_type>, std::less<>>;
 		using normal_queue_t = std::queue<task_type>;
-	public:
-		wrapped_queue() {
-			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				tasks_ = priority_queue_t{};
-			}
-			else {
-				tasks_ = normal_queue_t{};
-			}
-		}
+		wrapped_queue() = default;
 
 		void push(task_type&& task) {
 			std::lock_guard<std::mutex> lock(queue_mtx_);
-			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				std::get<priority_queue_t>(tasks_).push(std::forward<task_type>(task));
-			}
-			else {
-				std::get<normal_queue_t>(tasks_).push(std::forward<task_type>(task));
-			}
+			tasks_.push(std::forward<task_type>(task));
 		}
 
 		bool pop(task_type& task) {
 			task.task_ = nullptr;
 			std::lock_guard<std::mutex> lock(queue_mtx_);
-			if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
-				auto& real_queue = std::get<priority_queue_t>(tasks_);
-				if (!real_queue.empty()) {
-					task = real_queue.top();
-					real_queue.pop();
+			if (!tasks_.empty()) {
+				if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
+					task = tasks_.top();
 				}
-			}
-			else {
-				auto& real_queue = std::get<normal_queue_t>(tasks_);
-				if (!real_queue.empty()) {
-					task = std::move(real_queue.front());
-					real_queue.pop();
+				else {
+					task = std::move(tasks_.front());
 				}
+				tasks_.pop();
 			}
 			return task.task_ != nullptr;
 		}
 
 		bool empty() const {
-			return std::visit([this](auto& q) { 
-				std::lock_guard<std::mutex> lock(queue_mtx_);
-				return q.empty(); 
-				}, tasks_);
+			return tasks_.empty();
 		}
 
 		size_t size() const {
-			return std::visit([this](auto& q) { 
-				std::unique_lock<std::mutex> lock(queue_mtx_);
-				return q.size(); 
-				}, tasks_);
+			return tasks_.size();
 		}
 
 	private:
-		std::variant<priority_queue_t, normal_queue_t> tasks_;
+		std::conditional_t<
+			Policy & ThreadPoolPolicy::PRIORITY,
+			priority_queue_t, 
+			normal_queue_t
+		> tasks_;
 		mutable std::mutex queue_mtx_;
 	};
 
 	class wrapped_thread {
 		using thread_work = std::function<void(wrapped_thread&)>;
 	public:
-		explicit wrapped_thread(thread_work func, size_t id) 
+		explicit wrapped_thread(thread_work func, uint32_t slot) 
 			: func_(std::move(func)) 
-			, id_(id)
+			, slot_(slot)
 		{ }
 
 		void start() {
@@ -275,8 +291,8 @@ private:
 			cv_.notify_one();
 		}
 
-		auto get_id() const {
-			return id_;
+		auto get_slot() const {
+			return slot_;
 		}
 
 		auto queue_size() const {
@@ -297,7 +313,7 @@ private:
 
 	private:
 		wrapped_queue queue_;
-		size_t id_;
+		uint32_t slot_;
 		std::mutex thread_mtx_;
 		std::condition_variable cv_;
 		thread_work func_;
@@ -312,13 +328,13 @@ private:
 		}
 
 		if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
+			if (thread_count_ <= 1) {
+				return false;
+			}
 			std::unique_lock lock(pool_mtx_);
 			auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
-			auto it = std::next(threads_.begin(), victim_id);
-			if (it->first != worker.get_id()) {
-				if (it->second->try_steal(task)) {
-					return true;
-				}
+			if (threads_[victim_id]) {
+				return threads_[victim_id]->try_steal(task);
 			}
 		}
 
@@ -367,11 +383,13 @@ private:
 			idle_threads_.fetch_add(1);
 		}
 
-		std::unique_lock<std::mutex> lock(pool_mtx_);
-		thread_count_.fetch_sub(1);
-		threads_.erase(worker.get_id());
 		idle_threads_.fetch_sub(1);
-		if (threads_.empty()) {
+		auto slot = worker.get_slot();
+		std::unique_lock<std::mutex> lock(pool_mtx_);
+		threads_[slot].reset(nullptr);
+		available_slots_.push_back(slot);
+		thread_count_.fetch_sub(1);
+		if (thread_count_.load() == 0) {
 			pool_cv_.notify_all();
 		}
 	}
@@ -409,23 +427,16 @@ private:
 		}
 
 		if (need_new_thread) {
-			auto id = thread_id_gen_.fetch_add(1);
-			auto worker = std::make_unique<wrapped_thread>(
-				std::bind(&thread_pool::worker_func, this, std::placeholders::_1),
-				id);
-			worker->push(std::move(wrapped));
-			worker->start();
-			{
-				std::unique_lock<std::mutex> lock(pool_mtx_);
-				threads_.emplace(id, std::move(worker));
+			auto t = create_thread();
+			if (t) {
+				t->push(std::move(wrapped));
+				t->start();
 			}
-			thread_count_.fetch_add(1);
 		}
 		else {
 			std::unique_lock<std::mutex> lock(pool_mtx_);
-			auto it = std::next(threads_.begin(),
-				std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng));
-			it->second->push(std::move(wrapped));
+			auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
+			threads_[slot]->push(std::move(wrapped));
 		}
 
 		remaining_tasks_.fetch_add(1);
@@ -434,16 +445,21 @@ private:
 
 
 private:
-	std::unordered_map<size_t, std::unique_ptr<wrapped_thread>> threads_;
-	std::mutex													pool_mtx_;
-	std::condition_variable										pool_cv_;
-	std::atomic<bool>											running_{ true };
-	std::atomic<size_t>											thread_id_gen_{ 0 };
-	std::atomic<size_t>											idle_threads_{ 0 };
-	std::atomic<size_t>											thread_count_{ 0 };
-	std::atomic<size_t>											remaining_tasks_{ 0 };
-	const chrono::milliseconds									thread_timeout_;
-	const chrono::milliseconds									thread_step_;
+	std::vector<std::unique_ptr<wrapped_thread>>	threads_;
+	std::mutex										pool_mtx_;
+	std::condition_variable							pool_cv_;
+	std::atomic<bool>								running_{ true };
+	std::atomic<size_t>								remaining_tasks_{ 0 };
+	std::atomic<uint32_t>							idle_threads_{ 0 };
+	std::atomic<uint32_t>							thread_count_{ 0 };
+	std::vector<uint32_t> 							available_slots_;
+	const uint32_t									max_threads_;
+	const chrono::milliseconds						thread_timeout_;
+	const chrono::milliseconds						thread_step_;
+	std::conditional_t<
+		Policy & ThreadPoolPolicy::PRIORITY,
+		typename wrapped_queue::priority_queue_t,
+		typename wrapped_queue::normal_queue_t>		global_queue_;
 };
 
 }; // namespace leo
