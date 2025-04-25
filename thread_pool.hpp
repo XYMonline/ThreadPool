@@ -145,16 +145,33 @@ public:
 
 	void destroy() {
 		running_ = false;
-		std::unique_lock<std::mutex> lock(pool_mtx_);
+		uint32_t worker_slot = 0;
 
-		for (auto& thread : threads_) {
-			if (thread) {
-				thread->notify();
+		bool is_worker_thread = wrapped_thread::is_worker();
+
+		if (is_worker_thread) {
+			std::unique_lock<std::mutex> lock(pool_mtx_);
+			threads_[worker_slot]->set_cleanup_status(true);
+
+			for (auto& thread : threads_) {
+				if (thread && thread->get_slot() != worker_slot) {
+					thread->notify();
+				}
 			}
 		}
+		else {
+			std::unique_lock<std::mutex> lock(pool_mtx_);
 
-		pool_cv_.wait(lock, [this] { return thread_count_.load() == 0; });
+			for (auto& thread : threads_) {
+				if (thread) {
+					thread->notify();
+				}
+			}
+
+			pool_cv_.wait(lock, [this] { return thread_count_.load() == 0; });
+		}
 	}
+
 
 	// TODO
 	auto create_thread() {
@@ -178,6 +195,10 @@ public:
 	}
 
 	void wait_all() {
+		bool is_worker_thread = wrapped_thread::is_worker();
+		if (is_worker_thread) {
+			throw std::runtime_error("Cannot call wait_all from worker thread");
+		}
 		std::unique_lock<std::mutex> lock(pool_mtx_);
 		pool_cv_.wait(lock, [this] { return remaining_tasks_ == 0; });
 	}
@@ -255,15 +276,28 @@ private:
 
 	class wrapped_thread {
 		using thread_work = std::function<void(wrapped_thread&)>;
+		static inline thread_local wrapped_thread* current_worker = nullptr;
 	public:
 		explicit wrapped_thread(thread_work func, uint32_t slot) 
 			: func_(std::move(func)) 
 			, slot_(slot)
+			, cleanup_thread_(false)
 		{ }
 
+		~wrapped_thread() {
+			current_worker = nullptr;
+		}
+
 		void start() {
-			auto t = std::thread([this] { func_(*this); });
+			auto t = std::thread([this] { 
+				current_worker = this;
+				func_(*this); 
+				});
 			t.detach();
+		}
+
+		static bool is_worker() {
+			return current_worker != nullptr;
 		}
 
 		void push(task_type&& task) {
@@ -311,12 +345,21 @@ private:
 			return false;
 		}
 
+		void set_cleanup_status(bool status) {
+			cleanup_thread_ = status;
+		}
+
+		bool should_cleanup() const {
+			return cleanup_thread_;
+		}
+
 	private:
 		wrapped_queue queue_;
 		uint32_t slot_;
 		std::mutex thread_mtx_;
 		std::condition_variable cv_;
 		thread_work func_;
+		bool cleanup_thread_;
 	};
 
 private:
@@ -385,12 +428,37 @@ private:
 
 		idle_threads_.fetch_sub(1);
 		auto slot = worker.get_slot();
-		std::unique_lock<std::mutex> lock(pool_mtx_);
-		threads_[slot].reset(nullptr);
-		available_slots_.push_back(slot);
-		thread_count_.fetch_sub(1);
-		if (thread_count_.load() == 0) {
+
+		if (worker.should_cleanup()) {
+			std::unique_lock<std::mutex> lock(pool_mtx_);
+			for (auto& th : threads_) {
+				if (th && th->get_slot() != slot) {
+					th->notify();
+				}
+			}
+
+			pool_cv_.wait(lock, [this, slot]() {
+				for (auto& th : threads_) {
+					if (th && th->get_slot() != slot) {
+						return false;
+					}
+				}
+				return true;
+				});
+
+			threads_[slot].reset(nullptr);
+			available_slots_.push_back(slot);
+			thread_count_.fetch_sub(1);
 			pool_cv_.notify_all();
+		}
+		else {
+			std::unique_lock<std::mutex> lock(pool_mtx_);
+			threads_[slot].reset(nullptr);
+			available_slots_.push_back(slot);
+			thread_count_.fetch_sub(1);
+			if (thread_count_.load() == 0) {
+				pool_cv_.notify_all();
+			}
 		}
 	}
 
