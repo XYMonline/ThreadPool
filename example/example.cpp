@@ -391,6 +391,7 @@ void cancellation_example() {
 
     // 协作式取消任务
     {
+		std::println("\nCooperative cancellation example:\n");
         leo::thread_pool pool(1);
 		auto token = pool.create_token();
 		auto res = pool.submit_cancelable(token, [token] {
