@@ -239,7 +239,7 @@ private:
 	public:
 		using task_type = typename thread_pool<P>::task_type;
 		using queue_container_t = std::conditional_t<
-			P & ThreadPoolPolicy::PRIORITY,
+			static_cast<bool>(P & ThreadPoolPolicy::PRIORITY),
 			std::priority_queue<task_type, std::vector<task_type>, std::less<>>,
 			std::queue<task_type>
 		>;
@@ -312,7 +312,7 @@ private:
 	public:
 		using task_type = typename thread_pool<P>::task_type;
 		using queue_container_t = std::conditional_t<
-			P & ThreadPoolPolicy::PRIORITY,
+			static_cast<bool>(P & ThreadPoolPolicy::PRIORITY),
 			std::priority_queue<task_type, std::vector<task_type>, std::less<>>,
 			std::queue<task_type>
 		>;
@@ -482,7 +482,7 @@ private:
 	// 最终使用时的队列选择器
 	template<ThreadPoolPolicy P>
 	using wrapped_queue = std::conditional_t<
-		P & ThreadPoolPolicy::WORK_STEALING,
+		static_cast<bool>(P & ThreadPoolPolicy::PRIORITY),
 		local_queue<P>,
 		global_queue<P>
 	>;
