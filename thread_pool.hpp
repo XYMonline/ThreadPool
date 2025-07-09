@@ -96,11 +96,7 @@ public:
 		}
 	}
 
-	~thread_pool() {
-		if (running_) {
-			destroy();
-		}
-	}
+	~thread_pool() { if (running_) destroy(); }
 
 	thread_pool(const thread_pool&) = delete;
 	thread_pool(thread_pool&&) = default;
@@ -139,9 +135,7 @@ public:
 		}
 	}
 
-	cancel_token_ptr create_token() {
-		return std::make_shared<cancel_token>();
-	}
+	cancel_token_ptr create_token() { return std::make_shared<cancel_token>(); }
 
 	void destroy() {
 		running_ = false;
@@ -182,7 +176,8 @@ public:
 			available_slots_.pop_back();
 			auto worker = std::make_unique<wrapped_thread>(
 				std::bind(&thread_pool::worker_func, this, std::placeholders::_1),
-				slot);
+				slot,
+				this);
 			threads_.emplace_back(std::move(worker));
 			thread_count_.fetch_add(1);
 			return threads_.back().get();
@@ -190,9 +185,7 @@ public:
 		return (wrapped_thread*)nullptr;
 	}
 
-	size_t get_pool_size() const {
-		return thread_count_;
-	}
+	size_t get_pool_size() const { return thread_count_; }
 
 	void wait_all() {
 		bool is_worker_thread = wrapped_thread::is_worker();
@@ -212,81 +205,300 @@ private:
 		explicit warpped_task(std::function<void()> t = nullptr, priority_type p = 0, cancel_token_ptr cancel_ptr = nullptr)
 			: task_(std::move(t)), priority_(p), cancel_ptr_(cancel_ptr) { }
 
-		bool operator<(const warpped_task& other) const {
-			return priority_ < other.priority_; 
-		}
+		bool operator<(const warpped_task& other) const { return priority_ < other.priority_; }
 
-		bool operator>(const warpped_task& other) const {
-			return priority_ > other.priority_;
-		}
+		bool operator>(const warpped_task& other) const { return priority_ > other.priority_; }
 
-		bool is_cancelled() const {
-			return cancel_ptr_ && cancel_ptr_->is_cancelled();
-		}
+		bool is_cancelled() const { return cancel_ptr_ && cancel_ptr_->is_cancelled(); }
 
-		void exec() {
-			if (task_) {
-				task_();
-			}
-		}
+		void exec() { if (task_) task_(); }
 	};
 
-	class wrapped_queue {
+	template<typename Derived, ThreadPoolPolicy P>
+	class queue_base {
 	public:
-		using priority_queue_t = std::priority_queue<task_type, std::vector<task_type>, std::less<>>;
-		using normal_queue_t = std::queue<task_type>;
-		wrapped_queue() = default;
+		using task_type = typename thread_pool<P>::task_type;
 
-		void push(task_type&& task) {
-			std::lock_guard<std::mutex> lock(queue_mtx_);
-			tasks_.push(std::forward<task_type>(task));
+		void push(task_type&& task) { static_cast<Derived*>(this)->push_impl(std::forward<task_type>(task)); }
+
+		bool pop(task_type& task) { return static_cast<Derived*>(this)->pop_impl(task); }
+
+		bool empty() const { return static_cast<Derived*>(this)->empty_impl(); }
+
+		void wait(const std::atomic<bool>& running) { static_cast<Derived*>(this)->wait_impl(running); }
+
+		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) { static_cast<Derived*>(this)->wait_for_impl(time, running); }
+
+		void notify() { static_cast<Derived*>(this)->notify_impl(); }
+
+		auto size() const { return static_cast<const Derived*>(this)->size_impl(); }
+	};
+
+	template<ThreadPoolPolicy P>
+	class local_queue : public queue_base<local_queue<P>, P> {
+	public:
+		using task_type = typename thread_pool<P>::task_type;
+		using queue_container_t = std::conditional_t<
+			P & ThreadPoolPolicy::PRIORITY,
+			std::priority_queue<task_type, std::vector<task_type>, std::less<>>,
+			std::queue<task_type>
+		>;
+
+		local_queue(const void* pool_ptr) {}
+
+		~local_queue() {
+			std::lock_guard<std::mutex> lock(mtx_);
+			cv_.notify_all();
 		}
 
-		bool pop(task_type& task) {
+		friend queue_base<local_queue<P>, P>;
+	private:
+
+		void push_impl(task_type&& task) {
+			std::lock_guard<std::mutex> lock(mtx_);
+			tasks_.push(std::forward<task_type>(task));
+			cv_.notify_one();
+		}
+
+		bool pop_impl(task_type& task) {
 			task.task_ = nullptr;
-			std::lock_guard<std::mutex> lock(queue_mtx_);
+			std::lock_guard<std::mutex> lock(mtx_);
+
 			if (!tasks_.empty()) {
-				if constexpr (Policy & ThreadPoolPolicy::PRIORITY) {
+				if constexpr (P & ThreadPoolPolicy::PRIORITY) {
 					task = tasks_.top();
-				}
-				else {
+				} else {
 					task = std::move(tasks_.front());
 				}
 				tasks_.pop();
 			}
+
 			return task.task_ != nullptr;
 		}
 
-		bool empty() const {
+		bool empty_impl() const {
+			std::lock_guard<std::mutex> lock(mtx_);
 			return tasks_.empty();
 		}
 
-		size_t size() const {
+		void wait_impl(const std::atomic<bool>& running) {
+			std::unique_lock<std::mutex> lock(mtx_);
+			cv_.wait(lock, [this, &running] { return !tasks_.empty() || !running; });
+		}
+
+		void wait_for_impl(chrono::milliseconds time, const std::atomic<bool>& running) {
+			std::unique_lock<std::mutex> lock(mtx_);
+			cv_.wait_for(lock, time, [this, &running] { return !tasks_.empty() || !running; });
+		}
+
+		void notify_impl() {
+			std::lock_guard<std::mutex> lock(mtx_);
+			cv_.notify_one();
+		}
+
+		auto size_impl() const {
+			std::lock_guard<std::mutex> lock(mtx_);
 			return tasks_.size();
 		}
 
 	private:
-		std::conditional_t<
-			Policy & ThreadPoolPolicy::PRIORITY,
-			priority_queue_t, 
-			normal_queue_t
-		> tasks_;
-		mutable std::mutex queue_mtx_;
+		queue_container_t tasks_;
+		mutable std::mutex mtx_;
+		std::condition_variable cv_;
 	};
+
+	template<ThreadPoolPolicy P>
+	class global_queue : public queue_base<global_queue<P>, P> {
+	public:
+		using task_type = typename thread_pool<P>::task_type;
+		using queue_container_t = std::conditional_t<
+			P & ThreadPoolPolicy::PRIORITY,
+			std::priority_queue<task_type, std::vector<task_type>, std::less<>>,
+			std::queue<task_type>
+		>;
+
+		struct shared_resources {
+			std::shared_ptr<queue_container_t> tasks;
+			std::shared_ptr<std::mutex> mtx;
+			std::shared_ptr<std::condition_variable> cv;
+			std::atomic<int> ref_count{0};
+
+			shared_resources() 
+				: tasks(std::make_shared<queue_container_t>())
+				, mtx(std::make_shared<std::mutex>())
+				, cv(std::make_shared<std::condition_variable>()) {}
+		};
+
+		static std::unordered_map<const void*, std::shared_ptr<shared_resources>>& get_resource_map() {
+			static std::unordered_map<const void*, std::shared_ptr<shared_resources>> resource_map;
+			return resource_map;
+		}
+
+		static std::mutex& get_resource_map_mutex() {
+			static std::mutex resource_map_mutex;
+			return resource_map_mutex;
+		}
+
+		static std::shared_ptr<shared_resources> create_or_get_resources(const void* pool_ptr) {
+			std::lock_guard<std::mutex> lock(get_resource_map_mutex());
+			auto& resource_map = get_resource_map();
+			
+			auto it = resource_map.find(pool_ptr);
+			if (it == resource_map.end()) {
+				auto resources = std::make_shared<shared_resources>();
+				resource_map[pool_ptr] = resources;
+				return resources;
+			}
+			return it->second;
+		}
+
+		static void remove_resources(const void* pool_ptr) {
+			std::lock_guard<std::mutex> lock(get_resource_map_mutex());
+			auto& resource_map = get_resource_map();
+			resource_map.erase(pool_ptr);
+		}
+
+		explicit global_queue(const void* pool_ptr) 
+			: pool_ptr_(pool_ptr) {
+			resources_ = create_or_get_resources(pool_ptr);
+			resources_->ref_count.fetch_add(1);
+		}
+
+		~global_queue() {
+			if (resources_) {
+				int prev_count = resources_->ref_count.fetch_sub(1);
+				
+				if (resources_->mtx && resources_->cv) {
+					std::lock_guard<std::mutex> lock(*resources_->mtx);
+					resources_->cv->notify_all();
+				}
+
+				if (prev_count == 1) {
+					remove_resources(pool_ptr_);
+				}
+			}
+		}
+
+		global_queue(const global_queue& other) 
+			: pool_ptr_(other.pool_ptr_), resources_(other.resources_) {
+			if (resources_) {
+				resources_->ref_count.fetch_add(1);
+			}
+		}
+
+		global_queue(global_queue&& other) noexcept
+			: pool_ptr_(other.pool_ptr_), resources_(std::move(other.resources_)) {
+			other.pool_ptr_ = nullptr;
+		}
+
+		global_queue& operator=(const global_queue& other) {
+			if (this != &other) {
+				if (resources_) {
+					int prev_count = resources_->ref_count.fetch_sub(1);
+					if (prev_count == 1) {
+						remove_resources(pool_ptr_);
+					}
+				}
+
+				pool_ptr_ = other.pool_ptr_;
+				resources_ = other.resources_;
+				if (resources_) {
+					resources_->ref_count.fetch_add(1);
+				}
+			}
+			return *this;
+		}
+
+		global_queue& operator=(global_queue&& other) noexcept {
+			if (this != &other) {
+				if (resources_) {
+					int prev_count = resources_->ref_count.fetch_sub(1);
+					if (prev_count == 1) {
+						remove_resources(pool_ptr_);
+					}
+				}
+
+				pool_ptr_ = other.pool_ptr_;
+				resources_ = std::move(other.resources_);
+				other.pool_ptr_ = nullptr;
+			}
+			return *this;
+		}
+
+		friend queue_base<global_queue<P>, P>;
+	private:
+		void push_impl(task_type&& task) {
+			std::lock_guard<std::mutex> lock(*resources_->mtx);
+			resources_->tasks->push(std::forward<task_type>(task));
+			resources_->cv->notify_one();
+		}
+
+		bool pop_impl(task_type& task) {
+			task.task_ = nullptr;
+			std::lock_guard<std::mutex> lock(*resources_->mtx);
+
+			if (!resources_->tasks->empty()) {
+				if constexpr (P & ThreadPoolPolicy::PRIORITY) {
+					task = resources_->tasks->top();
+				} else {
+					task = std::move(resources_->tasks->front());
+				}
+				resources_->tasks->pop();
+			}
+
+			return task.task_ != nullptr;
+		}
+
+		bool empty_impl() const {
+			std::lock_guard<std::mutex> lock(*resources_->mtx);
+			return resources_->tasks->empty();
+		}
+
+		void wait_impl(const std::atomic<bool>& running) {
+			std::unique_lock<std::mutex> lock(*resources_->mtx);
+			resources_->cv->wait(lock, [this, &running] { return !resources_->tasks->empty() || !running; });
+		}
+
+		void wait_for_impl(chrono::milliseconds time, const std::atomic<bool>& running) {
+			std::unique_lock<std::mutex> lock(*resources_->mtx);
+			resources_->cv->wait_for(lock, time, [this, &running] { return !resources_->tasks->empty() || !running; });
+		}
+
+		void notify_impl() {
+			std::lock_guard<std::mutex> lock(*resources_->mtx);
+			resources_->cv->notify_one();
+		}
+
+		auto size_impl() const {
+			std::lock_guard<std::mutex> lock(*resources_->mtx);
+			return resources_->tasks->size();
+		}
+
+	private:
+		const void* pool_ptr_;
+		std::shared_ptr<shared_resources> resources_;
+	};
+
+	// 最终使用时的队列选择器
+	template<ThreadPoolPolicy P>
+	using wrapped_queue = std::conditional_t<
+		P & ThreadPoolPolicy::WORK_STEALING,
+		local_queue<P>,
+		global_queue<P>
+	>;
 
 	class wrapped_thread {
 		using thread_work = std::function<void(wrapped_thread&)>;
 		static inline thread_local wrapped_thread* current_worker = nullptr;
 	public:
-		explicit wrapped_thread(thread_work func, uint32_t slot) 
+		explicit wrapped_thread(thread_work func, uint32_t slot, const void* pool_ptr)
 			: func_(std::move(func)) 
 			, slot_(slot)
 			, cleanup_thread_(false)
+			, queue_(pool_ptr)
 		{ }
 
-		~wrapped_thread() {
-			current_worker = nullptr;
-		}
+		~wrapped_thread() { current_worker = nullptr; }
 
 		void start() {
 			auto t = std::thread([this] { 
@@ -296,68 +508,37 @@ private:
 			t.detach();
 		}
 
-		static bool is_worker() {
-			return current_worker != nullptr;
-		}
+		static bool is_worker() { return current_worker != nullptr; }
 
-		void push(task_type&& task) {
-			std::lock_guard<std::mutex> lock(thread_mtx_);
-			queue_.push(std::forward<task_type>(task));
-			cv_.notify_one();
-		}
+		void push(task_type&& task) { queue_.push(std::forward<task_type>(task)); }
 
-		bool try_pop(task_type& task) {
-			return queue_.pop(task);
-		}
+		bool try_pop(task_type& task) { return queue_.pop(task); }
 
-		void wait(const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(thread_mtx_);
-			cv_.wait(lock, [this, &running] { return !queue_.empty() || !running; });
-		}
+		void wait(const std::atomic<bool>& running) { queue_.wait(running); }
 
-		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(thread_mtx_);
-			cv_.wait_for(lock, time, [this, &running] { return !queue_.empty() || !running; });
-		}
+		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) { queue_.wait_for(time, running); }
 
-		void notify() {
-			std::lock_guard<std::mutex> lock(thread_mtx_);
-			cv_.notify_one();
-		}
+		void notify() { queue_.notify(); }
 
-		auto get_slot() const {
-			return slot_;
-		}
+		auto queue_size() const { return queue_.size(); }
 
-		auto queue_size() const {
-			return queue_.size();
-		}
+		auto get_slot() const { return slot_; }
 
 		// provide a way to steal tasks from this thread
 		bool try_steal(task_type& task) {
 			if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
-				std::lock_guard<std::mutex> lock(thread_mtx_);
-				if (queue_.empty()) {
-					return false;
-				}
 				return queue_.pop(task);
 			}
 			return false;
 		}
 
-		void set_cleanup_status(bool status) {
-			cleanup_thread_ = status;
-		}
+		void set_cleanup_status(bool status) { cleanup_thread_ = status; }
 
-		bool should_cleanup() const {
-			return cleanup_thread_;
-		}
+		bool should_cleanup() const { return cleanup_thread_; }
 
 	private:
-		wrapped_queue queue_;
+		wrapped_queue<Policy> queue_;
 		uint32_t slot_;
-		std::mutex thread_mtx_;
-		std::condition_variable cv_;
 		thread_work func_;
 		bool cleanup_thread_;
 	};
@@ -511,6 +692,15 @@ private:
 		return res;
 	}
 
+	auto queue_size() const {
+		size_t total_size = 0;
+		for (const auto& thread : threads_) {
+			if (thread) {
+				total_size += thread->queue_size();
+			}
+		}
+		return total_size;
+	}
 
 private:
 	std::vector<std::unique_ptr<wrapped_thread>>	threads_;
@@ -524,11 +714,6 @@ private:
 	const uint32_t									max_threads_;
 	const chrono::milliseconds						thread_timeout_;
 	const chrono::milliseconds						thread_step_;
-	std::conditional_t<
-		Policy & ThreadPoolPolicy::PRIORITY,
-		typename wrapped_queue::priority_queue_t,
-		typename wrapped_queue::normal_queue_t>		global_queue_;
 };
 
 }; // namespace leo
-

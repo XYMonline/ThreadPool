@@ -8,7 +8,7 @@ using namespace leo;
 using namespace std::chrono_literals;
 
 // 测试基础功能 - 静态线程池
-TEST(ThreadPoolTest, BasicFunctionality) {
+TEST(BasicTest, BasicFunctionality) {
     thread_pool<> pool(4);
 
     std::atomic<int> counter{ 0 };
@@ -29,7 +29,7 @@ TEST(ThreadPoolTest, BasicFunctionality) {
     EXPECT_EQ(counter.load(), 10);
 }
 
-TEST(ThreadPoolTest, WaitAll) {
+TEST(BasicTest, WaitAll) {
     leo::thread_pool<> pool(4); // 创建一个包含4个线程的线程池
 
     std::atomic<int> counter{ 0 };
@@ -51,7 +51,7 @@ TEST(ThreadPoolTest, WaitAll) {
 }
 
 // 测试从工作线程调用wait_all会抛出异常
-TEST(ThreadPoolTest, WaitAllThrowsFromWorkerThread) {
+TEST(BasicTest, WaitAllThrowsFromWorkerThread) {
     thread_pool<> pool(4);
     std::atomic<bool> exception_thrown{ false };
 
@@ -80,7 +80,7 @@ TEST(ThreadPoolTest, WaitAllThrowsFromWorkerThread) {
 }
 
 // 测试在任务内部调用destroy
-TEST(ThreadPoolTest, DestroyInsideTask) {
+TEST(BasicTest, DestroyInsideTask) {
     // 使用共享指针跟踪线程池，以便在任务中销毁
     auto pool_ptr = std::make_shared<thread_pool<>>(4);
     std::atomic<bool> destroy_called{ false };
@@ -119,7 +119,7 @@ TEST(ThreadPoolTest, DestroyInsideTask) {
 }
 
 // 测试在任务中提交新任务 - 最简单的场景
-TEST(ThreadPoolTest, DISABLED_SubmitTaskFromTask) {
+TEST(SubtaskTest, SubmitTaskFromTask) {
     thread_pool<> pool(2); // 故意使用较少的线程，考验线程池的稳定性
     std::atomic<int> counter{ 0 };
 
@@ -147,7 +147,7 @@ TEST(ThreadPoolTest, DISABLED_SubmitTaskFromTask) {
 }
 
 // 测试在任务中提交多个新任务 - 更复杂的场景
-TEST(ThreadPoolTest, DISABLED_SubmitMultipleTasksFromTask) {
+TEST(SubtaskTest, SubmitMultipleTasksFromTask) {
     thread_pool<> pool(2); // 故意使用较少的线程
     std::atomic<int> counter{ 0 };
     std::atomic<int> total_sum{ 0 };
@@ -186,7 +186,7 @@ TEST(ThreadPoolTest, DISABLED_SubmitMultipleTasksFromTask) {
 }
 
 // 修复NestedTasksWithFutureGet测试
-TEST(ThreadPoolTest, DISABLED_NestedTasksWithFutureGet) {
+TEST(SubtaskTest, DISABLED_NestedTasksWithFutureGet) {
     thread_pool<> pool(4);
     std::atomic<int> level1_counter{ 0 };
     std::atomic<int> level2_counter{ 0 };
@@ -232,7 +232,7 @@ TEST(ThreadPoolTest, DISABLED_NestedTasksWithFutureGet) {
 }
 
 // 修复RecoverFromWaitAllException测试
-TEST(ThreadPoolTest, DISABLED_RecoverFromWaitAllException) {
+TEST(SubtaskTest, RecoverFromWaitAllException) {
     thread_pool<> pool(4);
     std::atomic<int> counter{ 0 };
     std::atomic<bool> exception_caught{ false };
@@ -279,7 +279,7 @@ TEST(ThreadPoolTest, DISABLED_RecoverFromWaitAllException) {
 }
 
 // 测试多个工作线程调用wait_all时都抛出异常
-TEST(ThreadPoolTest, DISABLED_MultipleWorkersCallingWaitAll) {
+TEST(SubtaskTest, MultipleWorkersCallingWaitAll) {
     thread_pool<> pool(6);
     std::atomic<int> exception_count{ 0 };
 
@@ -307,7 +307,7 @@ TEST(ThreadPoolTest, DISABLED_MultipleWorkersCallingWaitAll) {
 }
 
 // 测试返回值功能
-TEST(ThreadPoolTest, ReturnValue) {
+TEST(BasicTest, ReturnValue) {
     thread_pool<> pool(4);
 
     auto future = pool.submit([]() {
@@ -319,7 +319,7 @@ TEST(ThreadPoolTest, ReturnValue) {
 }
 
 // 测试动态线程池
-TEST(ThreadPoolTest, DynamicThreadPool) {
+TEST(BasicTest, DynamicThreadPool) {
     thread_pool<ThreadPoolPolicy::DYNAMIC> pool(2, 2s, 100ms); // 从4减少到2个初始线程
 
     std::atomic<int> counter{ 0 };
@@ -364,7 +364,7 @@ TEST(ThreadPoolTest, DynamicThreadPool) {
 }
 
 // 测试动态线程池的自动扩展和收缩
-TEST(ThreadPoolTest, DynamicThreadPoolExpandAndContract) {
+TEST(BasicTest, DynamicThreadPoolExpandAndContract) {
     thread_pool<ThreadPoolPolicy::DYNAMIC> pool(1, 500ms, 100ms); // 从1个线程开始
 
     std::atomic<int> counter{ 0 };
@@ -402,7 +402,7 @@ TEST(ThreadPoolTest, DynamicThreadPoolExpandAndContract) {
 }
 
 // 测试优先级任务
-TEST(ThreadPoolTest, PriorityTasks) {
+TEST(BasicTest, PriorityTasks) {
     thread_pool<ThreadPoolPolicy::PRIORITY> pool(2);
 
     std::vector<int> execution_order;
@@ -450,7 +450,7 @@ TEST(ThreadPoolTest, PriorityTasks) {
 }
 
 // 测试工作窃取
-TEST(ThreadPoolTest, WorkStealing) {
+TEST(BasicTest, WorkStealing) {
     thread_pool<ThreadPoolPolicy::WORK_STEALING> pool(4);
     
     std::atomic<int> counter{0};
@@ -482,9 +482,8 @@ TEST(ThreadPoolTest, WorkStealing) {
     EXPECT_GT(unique_threads.size(), 1);
 }
 
-
 // 测试销毁线程池
-TEST(ThreadPoolTest, DestroyPool) {
+TEST(BasicTest, DestroyPool) {
     auto pool = std::make_unique<thread_pool<>>(4);
 
     std::atomic<int> counter{ 0 };
@@ -505,7 +504,7 @@ TEST(ThreadPoolTest, DestroyPool) {
 }
 
 // 测试混合策略
-TEST(ThreadPoolTest, MixedPolicy) {
+TEST(BasicTest, MixedPolicy) {
     // 增加初始线程数
     thread_pool<ThreadPoolPolicy::ALL> pool(4, 1s, 100ms);
 
@@ -555,7 +554,7 @@ TEST(ThreadPoolTest, MixedPolicy) {
 }
 
 // 测试异常处理
-TEST(ThreadPoolTest, ExceptionHandling) {
+TEST(BasicTest, ExceptionHandling) {
     thread_pool<> pool(2);
 
     auto future1 = pool.submit([]() {
@@ -572,7 +571,7 @@ TEST(ThreadPoolTest, ExceptionHandling) {
 }
 
 // 测试任务取消功能
-TEST(ThreadPoolTest, TaskCancellation) {
+TEST(CancellationTest, TaskCancellation) {
     thread_pool<> pool(4);
 
     // 创建取消令牌
@@ -606,7 +605,7 @@ TEST(ThreadPoolTest, TaskCancellation) {
 }
 
 // 测试取消令牌可以取消多个任务
-TEST(ThreadPoolTest, CancelMultipleTasks) {
+TEST(CancellationTest, CancelMultipleTasks) {
     thread_pool<> pool(4);
     auto token = pool.create_token();
 
@@ -645,7 +644,7 @@ TEST(ThreadPoolTest, CancelMultipleTasks) {
 }
 
 // 测试带优先级的任务取消
-TEST(ThreadPoolTest, PriorityCancellation) {
+TEST(CancellationTest, PriorityCancellation) {
     thread_pool<ThreadPoolPolicy::PRIORITY> pool(2);
 
     auto token = pool.create_token();
@@ -680,7 +679,7 @@ TEST(ThreadPoolTest, PriorityCancellation) {
 }
 
 // 测试任务开始执行后不会被取消
-TEST(ThreadPoolTest, TaskStartedNotCancelled) {
+TEST(CancellationTest, TaskStartedNotCancelled) {
     thread_pool<> pool(1); // 只使用一个线程确保任务按顺序执行
 
     auto token = pool.create_token();
@@ -727,7 +726,7 @@ TEST(ThreadPoolTest, TaskStartedNotCancelled) {
 }
 
 // 测试在线程池中多个不同的取消令牌可以独立工作
-TEST(ThreadPoolTest, MultipleCancellationTokens) {
+TEST(CancellationTest, MultipleCancellationTokens) {
     thread_pool<> pool(4);
 
     auto token1 = pool.create_token();
@@ -767,8 +766,8 @@ TEST(ThreadPoolTest, MultipleCancellationTokens) {
 }
 
 // 测试大量任务
-TEST(ThreadPoolTest, LargeNumberOfTasks) {
-    thread_pool<leo::ALL> pool(4);
+TEST(StressTest, LargeNumberOfTasks) {
+    thread_pool<leo::ALL> pool(8);
 
     constexpr int num_tasks = 1000;
     std::vector<std::future<int>> futures;
@@ -789,7 +788,27 @@ TEST(ThreadPoolTest, LargeNumberOfTasks) {
     EXPECT_EQ(counter.load(), num_tasks);
 }
 
+// 测试没有工作窃取策略下队列阻塞行为
+TEST(BasicTest, BlockWithoutWorkSteal) {
+    leo::thread_pool<leo::ThreadPoolPolicy::DYNAMIC> pool(2);
+    std::atomic_bool flag;
+    auto f = pool.submit([&flag]() {
+        while (!flag.load()) {
+            std::this_thread::sleep_for(10ms); // 模拟长时间运行的任务
+		}
+        return true;
+		});
+    pool.submit([&flag]() {
+		flag.store(true); // 设置标志以结束第一个任务
+        });
+
+	EXPECT_TRUE(f.get()); // 确保任务可以正常完成
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+	// 只运行特定的测试
+    //::testing::GTEST_FLAG(filter) = "ThreadPoolTest.BlockWithoutWorkSteal";
+	//::testing::GTEST_FLAG(filter) = "SubtaskTest.*";
+	return RUN_ALL_TESTS();
 }
