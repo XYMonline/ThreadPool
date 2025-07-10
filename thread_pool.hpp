@@ -166,8 +166,6 @@ public:
 		}
 	}
 
-
-	// TODO
 	auto create_thread() {
 		std::unique_lock<std::mutex> lock(pool_mtx_);
 
@@ -379,51 +377,10 @@ private:
 			}
 		}
 
-		global_queue(const global_queue& other) 
-			: pool_ptr_(other.pool_ptr_), resources_(other.resources_) {
-			if (resources_) {
-				resources_->ref_count.fetch_add(1);
-			}
-		}
-
-		global_queue(global_queue&& other) noexcept
-			: pool_ptr_(other.pool_ptr_), resources_(std::move(other.resources_)) {
-			other.pool_ptr_ = nullptr;
-		}
-
-		global_queue& operator=(const global_queue& other) {
-			if (this != &other) {
-				if (resources_) {
-					int prev_count = resources_->ref_count.fetch_sub(1);
-					if (prev_count == 1) {
-						remove_resources(pool_ptr_);
-					}
-				}
-
-				pool_ptr_ = other.pool_ptr_;
-				resources_ = other.resources_;
-				if (resources_) {
-					resources_->ref_count.fetch_add(1);
-				}
-			}
-			return *this;
-		}
-
-		global_queue& operator=(global_queue&& other) noexcept {
-			if (this != &other) {
-				if (resources_) {
-					int prev_count = resources_->ref_count.fetch_sub(1);
-					if (prev_count == 1) {
-						remove_resources(pool_ptr_);
-					}
-				}
-
-				pool_ptr_ = other.pool_ptr_;
-				resources_ = std::move(other.resources_);
-				other.pool_ptr_ = nullptr;
-			}
-			return *this;
-		}
+		global_queue(const global_queue& other) = delete;
+		global_queue(global_queue&& other) = delete;
+		global_queue& operator=(const global_queue& other) = delete;
+		global_queue& operator=(global_queue&& other) = delete;
 
 		friend queue_base<global_queue<P>, P>;
 	private:
@@ -482,7 +439,7 @@ private:
 	// 最终使用时的队列选择器
 	template<ThreadPoolPolicy P>
 	using wrapped_queue = std::conditional_t<
-		static_cast<bool>(P & ThreadPoolPolicy::PRIORITY),
+		static_cast<bool>(P & ThreadPoolPolicy::WORK_STEALING),
 		local_queue<P>,
 		global_queue<P>
 	>;
@@ -509,6 +466,8 @@ private:
 		}
 
 		static bool is_worker() { return current_worker != nullptr; }
+
+		static wrapped_thread* get_current() { return current_worker; }
 
 		void push(task_type&& task) { queue_.push(std::forward<task_type>(task)); }
 
@@ -556,9 +515,16 @@ private:
 				return false;
 			}
 			std::unique_lock lock(pool_mtx_);
-			auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
-			if (threads_[victim_id]) {
-				return threads_[victim_id]->try_steal(task);
+			const size_t max_attempts = std::min<size_t>(thread_count_, 3);
+			for (size_t attempt = 0; attempt < max_attempts; ++attempt) {
+				auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
+
+				// avoid self
+				if (threads_[victim_id] && threads_[victim_id]->get_slot() != worker.get_slot()) {
+					if (threads_[victim_id]->try_steal(task)) {
+						return true;
+					}
+				}
 			}
 		}
 
@@ -598,12 +564,13 @@ private:
 				}
 				continue;
 			}
-
 			idle_threads_.fetch_sub(1);
 			task.exec();
 			remaining_tasks_.fetch_sub(1);
 			pool_cv_.notify_all();
-			idle_since = chrono::high_resolution_clock::now();
+			if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
+				idle_since = chrono::high_resolution_clock::now();
+			}
 			idle_threads_.fetch_add(1);
 		}
 
@@ -667,9 +634,14 @@ private:
 			);
 		}
 
-		warpped_task wrapped{ [task]() { (*task)(); }, priority, token };
 		auto res = task->get_future();
+		if (wrapped_thread::is_worker() && (idle_threads_.load() == 0)) { // if we are in a worker thread and no idle threads are available
+			(*task)(); // execute the task immediately
+			return res;
+		}
 
+
+		warpped_task wrapped{ [task]() { (*task)(); }, priority, token };
 		bool need_new_thread = false;
 		if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
 			need_new_thread = idle_threads_ == 0 && thread_count_ < std::thread::hardware_concurrency();
@@ -683,9 +655,25 @@ private:
 			}
 		}
 		else {
-			std::unique_lock<std::mutex> lock(pool_mtx_);
-			auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
-			threads_[slot]->push(std::move(wrapped));
+			if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
+				if (wrapped_thread::is_worker()) {
+					auto* current = wrapped_thread::get_current();
+					if (current) {
+						current->push(std::move(wrapped));
+						remaining_tasks_.fetch_add(1);
+						return res;
+					}
+				}
+
+				std::unique_lock<std::mutex> lock(pool_mtx_);
+				auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
+				threads_[slot]->push(std::move(wrapped));
+			}
+			else {
+				std::unique_lock<std::mutex> lock(pool_mtx_);
+				auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
+				threads_[slot]->push(std::move(wrapped));
+			}
 		}
 
 		remaining_tasks_.fetch_add(1);
