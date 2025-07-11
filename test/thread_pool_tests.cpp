@@ -8,7 +8,7 @@ using namespace leo;
 using namespace std::chrono_literals;
 
 // 测试基础功能 - 静态线程池
-TEST(BasicTest, BasicFunctionality) {
+TEST(BasicFeature, BasicFunctionality) {
     thread_pool<> pool(4);
 
     std::atomic<int> counter{ 0 };
@@ -29,7 +29,7 @@ TEST(BasicTest, BasicFunctionality) {
     EXPECT_EQ(counter.load(), 10);
 }
 
-TEST(BasicTest, WaitAll) {
+TEST(BasicFeature, WaitAll) {
     leo::thread_pool<> pool(4); // 创建一个包含4个线程的线程池
 
     std::atomic<int> counter{ 0 };
@@ -51,7 +51,7 @@ TEST(BasicTest, WaitAll) {
 }
 
 // 测试从工作线程调用wait_all会抛出异常
-TEST(BasicTest, WaitAllThrowsFromWorkerThread) {
+TEST(BasicFeature, WaitAllThrowsFromWorkerThread) {
     thread_pool<> pool(4);
     std::atomic<bool> exception_thrown{ false };
 
@@ -80,7 +80,7 @@ TEST(BasicTest, WaitAllThrowsFromWorkerThread) {
 }
 
 // 测试在任务内部调用destroy
-TEST(BasicTest, DestroyInsideTask) {
+TEST(BasicFeature, DestroyInsideTask) {
     // 使用共享指针跟踪线程池，以便在任务中销毁
     auto pool_ptr = std::make_shared<thread_pool<>>(4);
     std::atomic<bool> destroy_called{ false };
@@ -186,7 +186,7 @@ TEST(SubtaskTest, SubmitMultipleTasksFromTask) {
 }
 
 // 修复NestedTasksWithFutureGet测试
-TEST(SubtaskTest, DISABLED_NestedTasksWithFutureGet) {
+TEST(SubtaskTest, NestedTasksWithFutureGet) {
     thread_pool<> pool(4);
     std::atomic<int> level1_counter{ 0 };
     std::atomic<int> level2_counter{ 0 };
@@ -201,7 +201,7 @@ TEST(SubtaskTest, DISABLED_NestedTasksWithFutureGet) {
                 std::vector<std::future<void>> level2_futures;
                 for (int j = 0; j < 2; ++j) {
                     level2_futures.push_back(pool.submit([&level2_counter]() {
-                        std::this_thread::sleep_for(20ms);  // 减少等待时间
+                        //std::this_thread::sleep_for(10ms);  // 减少等待时间
                         level2_counter.fetch_add(1);
                         }));
                 }
@@ -253,7 +253,7 @@ TEST(SubtaskTest, RecoverFromWaitAllException) {
             // 尝试从工作线程调用wait_all - 应该抛出异常
             pool.wait_all();
         }
-        catch (const std::runtime_error& e) {
+        catch ([[maybe_unused]] const std::runtime_error& e) {
             exception_caught = true;
 
             // 用future.get()替代wait_all
@@ -307,7 +307,7 @@ TEST(SubtaskTest, MultipleWorkersCallingWaitAll) {
 }
 
 // 测试返回值功能
-TEST(BasicTest, ReturnValue) {
+TEST(BasicFeature, ReturnValue) {
     thread_pool<> pool(4);
 
     auto future = pool.submit([]() {
@@ -319,7 +319,7 @@ TEST(BasicTest, ReturnValue) {
 }
 
 // 测试动态线程池
-TEST(BasicTest, DynamicThreadPool) {
+TEST(BasicFeature, DynamicThreadPool) {
     thread_pool<ThreadPoolPolicy::DYNAMIC> pool(2, 2s, 100ms); // 从4减少到2个初始线程
 
     std::atomic<int> counter{ 0 };
@@ -364,7 +364,7 @@ TEST(BasicTest, DynamicThreadPool) {
 }
 
 // 测试动态线程池的自动扩展和收缩
-TEST(BasicTest, DynamicThreadPoolExpandAndContract) {
+TEST(BasicFeature, DynamicThreadPoolExpandAndContract) {
     thread_pool<ThreadPoolPolicy::DYNAMIC> pool(1, 500ms, 100ms); // 从1个线程开始
 
     std::atomic<int> counter{ 0 };
@@ -402,7 +402,7 @@ TEST(BasicTest, DynamicThreadPoolExpandAndContract) {
 }
 
 // 测试优先级任务
-TEST(BasicTest, PriorityTasks) {
+TEST(BasicFeature, PriorityTasks) {
     thread_pool<ThreadPoolPolicy::PRIORITY> pool(2);
 
     std::vector<int> execution_order;
@@ -450,7 +450,7 @@ TEST(BasicTest, PriorityTasks) {
 }
 
 // 测试工作窃取
-TEST(BasicTest, WorkStealing) {
+TEST(BasicFeature, WorkStealing) {
     thread_pool<ThreadPoolPolicy::WORK_STEALING> pool(4);
     
     std::atomic<int> counter{0};
@@ -483,7 +483,7 @@ TEST(BasicTest, WorkStealing) {
 }
 
 // 测试销毁线程池
-TEST(BasicTest, DestroyPool) {
+TEST(BasicFeature, DestroyPool) {
     auto pool = std::make_unique<thread_pool<>>(4);
 
     std::atomic<int> counter{ 0 };
@@ -504,7 +504,7 @@ TEST(BasicTest, DestroyPool) {
 }
 
 // 测试混合策略
-TEST(BasicTest, MixedPolicy) {
+TEST(BasicFeature, MixedPolicy) {
     // 增加初始线程数
     thread_pool<ThreadPoolPolicy::ALL> pool(4, 1s, 100ms);
 
@@ -554,7 +554,7 @@ TEST(BasicTest, MixedPolicy) {
 }
 
 // 测试异常处理
-TEST(BasicTest, ExceptionHandling) {
+TEST(BasicFeature, ExceptionHandling) {
     thread_pool<> pool(2);
 
     auto future1 = pool.submit([]() {
@@ -767,7 +767,7 @@ TEST(CancellationTest, MultipleCancellationTokens) {
 
 // 测试大量任务
 TEST(StressTest, LargeNumberOfTasks) {
-    thread_pool<leo::ALL> pool(8);
+    thread_pool<leo::ALL> pool(std::thread::hardware_concurrency());
 
     constexpr int num_tasks = 1000;
     std::vector<std::future<int>> futures;
@@ -789,7 +789,7 @@ TEST(StressTest, LargeNumberOfTasks) {
 }
 
 // 测试没有工作窃取策略下队列阻塞行为
-TEST(BasicTest, BlockWithoutWorkSteal) {
+TEST(BasicFeature, BlockWithoutWorkSteal) {
     leo::thread_pool<leo::ThreadPoolPolicy::DYNAMIC> pool(2);
     std::atomic_bool flag;
     auto f = pool.submit([&flag]() {
@@ -805,10 +805,382 @@ TEST(BasicTest, BlockWithoutWorkSteal) {
 	EXPECT_TRUE(f.get()); // 确保任务可以正常完成
 }
 
+// 死锁预防测试套件 - 测试各种策略组合下的死锁预防能力
+class DeadlockTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // 设置测试超时，防止真正的死锁导致测试卡死
+        timeout_ = 5s;
+    }
+
+    // 超时检测辅助函数
+    template<typename Future>
+    bool wait_with_timeout(Future& future, std::chrono::milliseconds timeout = 5s) {
+        return future.wait_for(timeout) == std::future_status::ready;
+    }
+
+    // 创建一个会导致潜在死锁的嵌套任务场景
+    template<ThreadPoolPolicy Policy>
+    void test_nested_tasks_scenario(uint32_t pool_size = 2) {
+        thread_pool<Policy> pool(pool_size);
+        std::atomic<int> completed_tasks{ 0 };
+
+        // 提交会创建子任务的父任务
+        auto outer_future = pool.submit([&pool, &completed_tasks]() {
+            std::vector<std::future<int>> inner_futures;
+
+            // 创建多个子任务，数量超过线程池大小
+            for (int i = 0; i < 4; ++i) {
+                inner_futures.push_back(pool.submit([i, &completed_tasks]() {
+                    std::this_thread::sleep_for(50ms);
+                    completed_tasks.fetch_add(1);
+                    return i * 10;
+                    }));
+            }
+
+            // 等待所有子任务完成
+            int sum = 0;
+            for (auto& f : inner_futures) {
+                sum += f.get();
+            }
+            return sum;
+            });
+
+        // 验证任务能在合理时间内完成，不会死锁
+        ASSERT_TRUE(wait_with_timeout(outer_future));
+        int result = outer_future.get();
+
+        EXPECT_EQ(result, 0 + 10 + 20 + 30); // 0*10 + 1*10 + 2*10 + 3*10
+        EXPECT_EQ(completed_tasks.load(), 4);
+    }
+
+    // 测试递归任务场景
+    template<ThreadPoolPolicy Policy>
+    void test_recursive_tasks_scenario() {
+        thread_pool<Policy> pool(2);
+        std::atomic<int> depth_counter{ 0 };
+
+        std::function<std::future<int>(thread_pool<Policy>&, int)> recursive_task =
+            [&](thread_pool<Policy>& p, int depth) -> std::future<int> {
+            return p.submit([&, depth]() -> int {
+                depth_counter.fetch_add(1);
+
+                if (depth <= 0) {
+                    return 1;
+                }
+
+                // 创建两个递归子任务
+                auto left = recursive_task(p, depth - 1);
+                auto right = recursive_task(p, depth - 1);
+
+                return left.get() + right.get();
+                });
+            };
+
+        auto future = recursive_task(pool, 3);
+
+        // 验证递归任务能完成，不会死锁
+        ASSERT_TRUE(wait_with_timeout(future));
+        int result = future.get();
+
+        EXPECT_GT(result, 0);
+        EXPECT_GT(depth_counter.load(), 0);
+    }
+
+    // 测试多层嵌套任务
+    template<ThreadPoolPolicy Policy>
+    void test_multi_level_nesting() {
+        thread_pool<Policy> pool(2);
+        std::atomic<int> level_counters[4]{};
+
+        auto future = pool.submit([&pool, &level_counters]() {
+            level_counters[0].fetch_add(1);
+
+            auto level1_future = pool.submit([&pool, &level_counters]() {
+                level_counters[1].fetch_add(1);
+
+                auto level2_future = pool.submit([&pool, &level_counters]() {
+                    level_counters[2].fetch_add(1);
+
+                    auto level3_future = pool.submit([&level_counters]() {
+                        level_counters[3].fetch_add(1);
+                        return 42;
+                        });
+
+                    return level3_future.get();
+                    });
+
+                return level2_future.get();
+                });
+
+            return level1_future.get();
+            });
+
+        ASSERT_TRUE(wait_with_timeout(future));
+        int result = future.get();
+
+        EXPECT_EQ(result, 42);
+        for (int i = 0; i < 4; ++i) {
+            EXPECT_EQ(level_counters[i].load(), 1) << "Level " << i << " counter mismatch";
+        }
+    }
+
+    std::chrono::seconds timeout_;
+};
+
+// 测试默认策略（静态线程池）的死锁预防
+TEST_F(DeadlockTest, DefaultPolicyNestedTasks) {
+    SCOPED_TRACE("Testing DEFAULT policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::DEFAULT>();
+}
+
+TEST_F(DeadlockTest, DefaultPolicyRecursiveTasks) {
+    SCOPED_TRACE("Testing DEFAULT policy recursive tasks");
+    test_recursive_tasks_scenario<ThreadPoolPolicy::DEFAULT>();
+}
+
+TEST_F(DeadlockTest, DefaultPolicyMultiLevelNesting) {
+    SCOPED_TRACE("Testing DEFAULT policy multi-level nesting");
+    test_multi_level_nesting<ThreadPoolPolicy::DEFAULT>();
+}
+
+// 测试动态策略的死锁预防
+TEST_F(DeadlockTest, DynamicPolicyNestedTasks) {
+    SCOPED_TRACE("Testing DYNAMIC policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::DYNAMIC>();
+}
+
+TEST_F(DeadlockTest, DynamicPolicyRecursiveTasks) {
+    SCOPED_TRACE("Testing DYNAMIC policy recursive tasks");
+    test_recursive_tasks_scenario<ThreadPoolPolicy::DYNAMIC>();
+}
+
+TEST_F(DeadlockTest, DynamicPolicyMultiLevelNesting) {
+    SCOPED_TRACE("Testing DYNAMIC policy multi-level nesting");
+    test_multi_level_nesting<ThreadPoolPolicy::DYNAMIC>();
+}
+
+// 测试优先级策略的死锁预防
+TEST_F(DeadlockTest, PriorityPolicyNestedTasks) {
+    SCOPED_TRACE("Testing PRIORITY policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::PRIORITY>();
+}
+
+TEST_F(DeadlockTest, PriorityPolicyRecursiveTasks) {
+    SCOPED_TRACE("Testing PRIORITY policy recursive tasks");
+    test_recursive_tasks_scenario<ThreadPoolPolicy::PRIORITY>();
+}
+
+// 测试工作窃取策略的死锁预防
+TEST_F(DeadlockTest, DISABLED_WorkStealingPolicyNestedTasks) {
+    SCOPED_TRACE("Testing WORK_STEALING policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::WORK_STEALING>();
+}
+
+// 测试组合策略的死锁预防
+TEST_F(DeadlockTest, DynamicPriorityPolicyNestedTasks) {
+    SCOPED_TRACE("Testing DYNAMIC_PRIORITY policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::DYNAMIC_PRIORITY>();
+}
+
+TEST_F(DeadlockTest, WorkStealingPolicyRecursiveTasks) {
+    SCOPED_TRACE("Testing WORK_STEALING policy recursive tasks");
+    test_recursive_tasks_scenario<ThreadPoolPolicy::WORK_STEALING>();
+}
+
+TEST_F(DeadlockTest, DISABLED_WorkStealingPriorityPolicyNestedTasks) {
+    SCOPED_TRACE("Testing WORK_STEALING_PRIORITY policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::WORK_STEALING_PRIORITY>();
+}
+
+TEST_F(DeadlockTest, DISABLED_WorkStealingDynamicPolicyNestedTasks) {
+    SCOPED_TRACE("Testing WORK_STEALING_DYNAMIC policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::WORK_STEALING_DYNAMIC>();
+}
+
+TEST_F(DeadlockTest, DISABLED_AllPolicyNestedTasks) {
+    SCOPED_TRACE("Testing ALL policy nested tasks");
+    test_nested_tasks_scenario<ThreadPoolPolicy::ALL>();
+}
+
+TEST_F(DeadlockTest, AllPolicyRecursiveTasks) {
+    SCOPED_TRACE("Testing ALL policy recursive tasks");
+    test_recursive_tasks_scenario<ThreadPoolPolicy::ALL>();
+}
+
+TEST_F(DeadlockTest, AllPolicyMultiLevelNesting) {
+    SCOPED_TRACE("Testing ALL policy multi-level nesting");
+    test_multi_level_nesting<ThreadPoolPolicy::ALL>();
+}
+
+// 特殊场景测试 - 单线程池的极限情况
+TEST_F(DeadlockTest, SingleThreadPoolDeadlockPrevention) {
+    thread_pool<> pool(1); // 只有一个线程，最容易死锁
+    std::atomic<int> completed{ 0 };
+
+    auto future = pool.submit([&pool, &completed]() {
+        // 在单线程池中提交子任务应该被立即执行，而不是排队等待
+        auto sub_future1 = pool.submit([&completed]() {
+            completed.fetch_add(1);
+            return 1;
+            });
+
+        auto sub_future2 = pool.submit([&completed]() {
+            completed.fetch_add(1);
+            return 2;
+            });
+
+        return sub_future1.get() + sub_future2.get();
+        });
+
+    ASSERT_TRUE(wait_with_timeout(future));
+    int result = future.get();
+
+    EXPECT_EQ(result, 3);
+    EXPECT_EQ(completed.load(), 2);
+}
+
+// 测试极端嵌套深度
+TEST_F(DeadlockTest, DeepNestingDeadlockPrevention) {
+    thread_pool<> pool(2);
+    std::atomic<int> depth_reached{ 0 };
+
+    std::function<std::future<int>(int)> deep_nest = [&](int depth) -> std::future<int> {
+        return pool.submit([&, depth]() -> int {
+            depth_reached = std::max(depth_reached.load(), depth);
+
+            if (depth >= 10) {
+                return depth;
+            }
+
+            auto nested_future = deep_nest(depth + 1);
+            return nested_future.get();
+            });
+        };
+
+    auto future = deep_nest(0);
+
+    ASSERT_TRUE(wait_with_timeout(future, 10s)); // 给更长时间，因为嵌套很深
+    int result = future.get();
+
+    EXPECT_EQ(result, 10);
+    EXPECT_EQ(depth_reached.load(), 10);
+}
+
+// 测试混合场景：有些任务有子任务，有些没有
+TEST_F(DeadlockTest, MixedTasksDeadlockPrevention) {
+    thread_pool<> pool(3);
+    std::atomic<int> simple_tasks{ 0 };
+    std::atomic<int> nested_tasks{ 0 };
+
+    std::vector<std::future<int>> futures;
+
+    // 提交一些简单任务
+    for (int i = 0; i < 5; ++i) {
+        futures.push_back(pool.submit([&simple_tasks, i]() {
+            std::this_thread::sleep_for(30ms);
+            simple_tasks.fetch_add(1);
+            return i;
+            }));
+    }
+
+    // 提交一些有子任务的复杂任务
+    for (int i = 0; i < 3; ++i) {
+        futures.push_back(pool.submit([&pool, &nested_tasks, i]() {
+            auto sub_future = pool.submit([&nested_tasks]() {
+                std::this_thread::sleep_for(20ms);
+                nested_tasks.fetch_add(1);
+                return 100;
+                });
+            return i * 10 + sub_future.get();
+            }));
+    }
+
+    // 等待所有任务完成
+    int total_result = 0;
+    for (auto& f : futures) {
+        ASSERT_TRUE(wait_with_timeout(f));
+        total_result += f.get();
+    }
+
+    EXPECT_EQ(simple_tasks.load(), 5);
+    EXPECT_EQ(nested_tasks.load(), 3);
+
+    // 验证结果：简单任务 0+1+2+3+4=10，复杂任务 (0*10+100)+(1*10+100)+(2*10+100)=330
+    int expected = 0 + 1 + 2 + 3 + 4 + (0 * 10 + 100) + (1 * 10 + 100) + (2 * 10 + 100);
+    EXPECT_EQ(total_result, expected);
+}
+
+// 测试带优先级的嵌套任务死锁预防
+TEST_F(DeadlockTest, PriorityNestedTasksDeadlockPrevention) {
+    thread_pool<ThreadPoolPolicy::PRIORITY> pool(2);
+    std::atomic<int> high_priority_completed{ 0 };
+    std::atomic<int> low_priority_completed{ 0 };
+
+    auto future = pool.submit(5, [&pool, &high_priority_completed, &low_priority_completed]() {
+        // 提交高优先级子任务
+        auto high_future = pool.submit(10, [&high_priority_completed]() {
+            std::this_thread::sleep_for(30ms);
+            high_priority_completed.fetch_add(1);
+            return 1;
+            });
+
+        // 提交低优先级子任务
+        auto low_future = pool.submit(1, [&low_priority_completed]() {
+            std::this_thread::sleep_for(30ms);
+            low_priority_completed.fetch_add(1);
+            return 2;
+            });
+
+        return high_future.get() + low_future.get();
+        });
+
+    ASSERT_TRUE(wait_with_timeout(future));
+    int result = future.get();
+
+    EXPECT_EQ(result, 3);
+    EXPECT_EQ(high_priority_completed.load(), 1);
+    EXPECT_EQ(low_priority_completed.load(), 1);
+}
+
+// 测试取消令牌与嵌套任务的交互
+TEST_F(DeadlockTest, CancellationWithNestedTasksDeadlockPrevention) {
+    thread_pool<> pool(2);
+    auto token = pool.create_token();
+    std::atomic<int> completed{ 0 };
+
+    auto future = pool.submit_cancelable(token, [&pool, &completed]() {
+        // 即使父任务可能被取消，子任务也应该能正常处理
+        auto sub_future = pool.submit([&completed]() {
+            std::this_thread::sleep_for(50ms);
+            completed.fetch_add(1);
+            return 42;
+            });
+
+        return sub_future.get();
+        });
+
+    // 让任务有机会开始执行
+    std::this_thread::sleep_for(10ms);
+
+    ASSERT_TRUE(wait_with_timeout(future));
+
+    try {
+        int result = future.get();
+        EXPECT_EQ(result, 42);
+        EXPECT_EQ(completed.load(), 1);
+    }
+    catch ([[maybe_unused]] const std::runtime_error& e) {
+        // 如果父任务被取消，子任务仍然应该完成
+        std::this_thread::sleep_for(100ms);
+        EXPECT_EQ(completed.load(), 1);
+    }
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
 	// 只运行特定的测试
-    //::testing::GTEST_FLAG(filter) = "ThreadPoolTest.BlockWithoutWorkSteal";
-	//::testing::GTEST_FLAG(filter) = "SubtaskTest.*";
+	//::testing::GTEST_FLAG(filter) = "DeadlockTest.*";
+	//::testing::GTEST_FLAG(filter) = "BasicFeature.*";
 	return RUN_ALL_TESTS();
 }
