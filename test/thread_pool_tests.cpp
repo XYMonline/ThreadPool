@@ -1180,7 +1180,7 @@ TEST_F(DeadlockTest, CancellationWithNestedTasksDeadlockPrevention) {
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
 	// 只运行特定的测试
-	//::testing::GTEST_FLAG(filter) = "DeadlockTest.*";
+	::testing::GTEST_FLAG(filter) = "-DeadlockTest.*";
 	//::testing::GTEST_FLAG(filter) = "BasicFeature.*";
 	return RUN_ALL_TESTS();
 }

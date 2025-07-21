@@ -144,7 +144,7 @@ public:
 		bool is_worker_thread = wrapped_thread::is_worker();
 
 		if (is_worker_thread) {
-			std::unique_lock<std::mutex> lock(pool_mtx_);
+			std::unique_lock lock(creation_mtx_);
 			threads_[worker_slot]->set_cleanup_status(true);
 
 			for (auto& thread : threads_) {
@@ -154,7 +154,7 @@ public:
 			}
 		}
 		else {
-			std::unique_lock<std::mutex> lock(pool_mtx_);
+			std::unique_lock lock(creation_mtx_);
 
 			for (auto& thread : threads_) {
 				if (thread) {
@@ -167,7 +167,7 @@ public:
 	}
 
 	auto create_thread() {
-		std::unique_lock<std::mutex> lock(pool_mtx_);
+		std::unique_lock lock(creation_mtx_);
 
 		if (thread_count_ < max_threads_) {
 			auto slot = available_slots_.back();
@@ -190,7 +190,7 @@ public:
 		if (is_worker_thread) {
 			throw std::runtime_error("Cannot call wait_all from worker thread");
 		}
-		std::unique_lock<std::mutex> lock(pool_mtx_);
+		std::unique_lock lock(wait_mtx_);
 		pool_cv_.wait(lock, [this] { return remaining_tasks_ == 0; });
 	}
 
@@ -280,12 +280,12 @@ private:
 		}
 
 		void wait_impl(const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(mtx_);
+			std::unique_lock lock(mtx_);
 			cv_.wait(lock, [this, &running] { return !tasks_.empty() || !running; });
 		}
 
 		void wait_for_impl(chrono::milliseconds time, const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(mtx_);
+			std::unique_lock lock(mtx_);
 			cv_.wait_for(lock, time, [this, &running] { return !tasks_.empty() || !running; });
 		}
 
@@ -412,12 +412,12 @@ private:
 		}
 
 		void wait_impl(const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(*resources_->mtx);
+			std::unique_lock lock(*resources_->mtx);
 			resources_->cv->wait(lock, [this, &running] { return !resources_->tasks->empty() || !running; });
 		}
 
 		void wait_for_impl(chrono::milliseconds time, const std::atomic<bool>& running) {
-			std::unique_lock<std::mutex> lock(*resources_->mtx);
+			std::unique_lock lock(*resources_->mtx);
 			resources_->cv->wait_for(lock, time, [this, &running] { return !resources_->tasks->empty() || !running; });
 		}
 
@@ -436,7 +436,6 @@ private:
 		std::shared_ptr<shared_resources> resources_;
 	};
 
-	// 最终使用时的队列选择器
 	template<ThreadPoolPolicy P>
 	using wrapped_queue = std::conditional_t<
 		static_cast<bool>(P & ThreadPoolPolicy::WORK_STEALING),
@@ -514,7 +513,7 @@ private:
 			if (thread_count_ <= 1) {
 				return false;
 			}
-			std::unique_lock lock(pool_mtx_);
+			std::unique_lock lock(threads_mtx_);
 			const size_t max_attempts = std::min<size_t>(thread_count_, 3);
 			for (size_t attempt = 0; attempt < max_attempts; ++attempt) {
 				auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
@@ -553,7 +552,6 @@ private:
 				if constexpr (Policy & ThreadPoolPolicy::DYNAMIC) {
 					worker.wait_for(thread_step_, running_);
 					if (chrono::high_resolution_clock::now() - idle_since > thread_timeout_) {
-						std::unique_lock<std::mutex> lock(pool_mtx_);
 						if (thread_count_ > 1 && worker.queue_size() == 0) {
 							break;
 						}
@@ -578,7 +576,7 @@ private:
 		auto slot = worker.get_slot();
 
 		if (worker.should_cleanup()) {
-			std::unique_lock<std::mutex> lock(pool_mtx_);
+			std::unique_lock lock(wait_mtx_);
 			for (auto& th : threads_) {
 				if (th && th->get_slot() != slot) {
 					th->notify();
@@ -600,7 +598,7 @@ private:
 			pool_cv_.notify_all();
 		}
 		else {
-			std::unique_lock<std::mutex> lock(pool_mtx_);
+			std::unique_lock lock(threads_mtx_);
 			threads_[slot].reset(nullptr);
 			available_slots_.push_back(slot);
 			thread_count_.fetch_sub(1);
@@ -665,12 +663,12 @@ private:
 					}
 				}
 
-				std::unique_lock<std::mutex> lock(pool_mtx_);
+				std::unique_lock lock(threads_mtx_);
 				auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
 				threads_[slot]->push(std::move(wrapped));
 			}
 			else {
-				std::unique_lock<std::mutex> lock(pool_mtx_);
+				std::unique_lock lock(threads_mtx_);
 				auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
 				threads_[slot]->push(std::move(wrapped));
 			}
@@ -692,7 +690,9 @@ private:
 
 private:
 	std::vector<std::unique_ptr<wrapped_thread>>	threads_;
-	std::mutex										pool_mtx_;
+	std::mutex										creation_mtx_;
+	std::mutex										wait_mtx_;
+	std::mutex										threads_mtx_;
 	std::condition_variable							pool_cv_;
 	std::atomic<bool>								running_{ true };
 	std::atomic<size_t>								remaining_tasks_{ 0 };

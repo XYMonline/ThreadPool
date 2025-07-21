@@ -16,7 +16,7 @@ add_executable(${PROJECT_NAME}
 
 target_compile_options(${PROJECT_NAME}
 	PRIVATE 
-	$<$<CXX_COMPILER_ID:MSVC>:/bigobj> 
+	$<$<CXX_COMPILER_ID:MSVC>:/bigobj /utf-8> 
 	$<$<CXX_COMPILER_ID:GNU>:-Wa,-mbig-obj>) 
 
 if(MSVC)
