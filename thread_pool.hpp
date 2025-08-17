@@ -21,14 +21,8 @@ namespace chrono = std::chrono;
 class cancel_token {
 public:
 	cancel_token() : cancelled_(false) {}
-
-	bool is_cancelled() const {
-		return cancelled_.load();
-	}
-
-	void cancel() {
-		cancelled_.store(true);
-	}
+	bool is_cancelled() const { return cancelled_.load(); }
+	void cancel() { cancelled_.store(true); }
 
 	void check_cancel() const {
 		if (is_cancelled()) {
@@ -43,10 +37,10 @@ private:
 using cancel_token_ptr = std::shared_ptr<cancel_token>;
 
 enum ThreadPoolPolicy {
-	DEFAULT							= 0,									// static
-	DYNAMIC							= 1,									// use dynamic pool size
-	PRIORITY						= 2,									// use task priority
-	WORK_STEALING					= 4,									// use work stealing
+	DEFAULT							= 0,
+	DYNAMIC							= 1,
+	PRIORITY						= 2,
+	WORK_STEALING					= 4,
 	DYNAMIC_PRIORITY				= DYNAMIC | PRIORITY,
 	WORK_STEALING_PRIORITY			= WORK_STEALING | PRIORITY,
 	WORK_STEALING_DYNAMIC			= WORK_STEALING | DYNAMIC,
@@ -61,8 +55,8 @@ class thread_pool {
 public:
 	using task_type = warpped_task;
 
-	explicit thread_pool(uint32_t pool_size = std::thread::hardware_concurrency(), 
-		chrono::milliseconds timeout = 60s, 
+	explicit thread_pool(uint32_t pool_size = std::thread::hardware_concurrency(),
+		chrono::milliseconds timeout = 60s,
 		chrono::milliseconds time_step = 1s,
 		uint32_t max_size = std::thread::hardware_concurrency()
 	)
@@ -144,6 +138,7 @@ public:
 		bool is_worker_thread = wrapped_thread::is_worker();
 
 		if (is_worker_thread) {
+			worker_slot = wrapped_thread::get_current()->get_slot();
 			std::unique_lock lock(creation_mtx_);
 			threads_[worker_slot]->set_cleanup_status(true);
 
@@ -204,11 +199,8 @@ private:
 			: task_(std::move(t)), priority_(p), cancel_ptr_(cancel_ptr) { }
 
 		bool operator<(const warpped_task& other) const { return priority_ < other.priority_; }
-
 		bool operator>(const warpped_task& other) const { return priority_ > other.priority_; }
-
 		bool is_cancelled() const { return cancel_ptr_ && cancel_ptr_->is_cancelled(); }
-
 		void exec() { if (task_) task_(); }
 	};
 
@@ -218,17 +210,11 @@ private:
 		using task_type = typename thread_pool<P>::task_type;
 
 		void push(task_type&& task) { static_cast<Derived*>(this)->push_impl(std::forward<task_type>(task)); }
-
 		bool pop(task_type& task) { return static_cast<Derived*>(this)->pop_impl(task); }
-
 		bool empty() const { return static_cast<Derived*>(this)->empty_impl(); }
-
 		void wait(const std::atomic<bool>& running) { static_cast<Derived*>(this)->wait_impl(running); }
-
 		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) { static_cast<Derived*>(this)->wait_for_impl(time, running); }
-
 		void notify() { static_cast<Derived*>(this)->notify_impl(); }
-
 		auto size() const { return static_cast<const Derived*>(this)->size_impl(); }
 	};
 
@@ -321,7 +307,7 @@ private:
 			std::shared_ptr<std::condition_variable> cv;
 			std::atomic<int> ref_count{0};
 
-			shared_resources() 
+			shared_resources()
 				: tasks(std::make_shared<queue_container_t>())
 				, mtx(std::make_shared<std::mutex>())
 				, cv(std::make_shared<std::condition_variable>()) {}
@@ -340,7 +326,7 @@ private:
 		static std::shared_ptr<shared_resources> create_or_get_resources(const void* pool_ptr) {
 			std::lock_guard<std::mutex> lock(get_resource_map_mutex());
 			auto& resource_map = get_resource_map();
-			
+
 			auto it = resource_map.find(pool_ptr);
 			if (it == resource_map.end()) {
 				auto resources = std::make_shared<shared_resources>();
@@ -356,7 +342,7 @@ private:
 			resource_map.erase(pool_ptr);
 		}
 
-		explicit global_queue(const void* pool_ptr) 
+		explicit global_queue(const void* pool_ptr)
 			: pool_ptr_(pool_ptr) {
 			resources_ = create_or_get_resources(pool_ptr);
 			resources_->ref_count.fetch_add(1);
@@ -365,7 +351,7 @@ private:
 		~global_queue() {
 			if (resources_) {
 				int prev_count = resources_->ref_count.fetch_sub(1);
-				
+
 				if (resources_->mtx && resources_->cv) {
 					std::lock_guard<std::mutex> lock(*resources_->mtx);
 					resources_->cv->notify_all();
@@ -448,51 +434,39 @@ private:
 		static inline thread_local wrapped_thread* current_worker = nullptr;
 	public:
 		explicit wrapped_thread(thread_work func, uint32_t slot, const void* pool_ptr)
-			: func_(std::move(func)) 
+			: func_(std::move(func))
 			, slot_(slot)
 			, cleanup_thread_(false)
 			, queue_(pool_ptr)
 		{ }
 
 		~wrapped_thread() { current_worker = nullptr; }
+		void set_cleanup_status(bool status) { cleanup_thread_ = status; }
+		bool should_cleanup() const { return cleanup_thread_; }
+		static bool is_worker() { return current_worker != nullptr; }
+		static wrapped_thread* get_current() { return current_worker; }
+		void push(task_type&& task) { queue_.push(std::forward<task_type>(task)); }
+		bool try_pop(task_type& task) { return queue_.pop(task); }
+		void wait(const std::atomic<bool>& running) { queue_.wait(running); }
+		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) { queue_.wait_for(time, running); }
+		void notify() { queue_.notify(); }
+		auto queue_size() const { return queue_.size(); }
+		auto get_slot() const { return slot_; }
 
 		void start() {
-			auto t = std::thread([this] { 
+			auto t = std::thread([this] {
 				current_worker = this;
-				func_(*this); 
+				func_(*this);
 				});
 			t.detach();
 		}
 
-		static bool is_worker() { return current_worker != nullptr; }
-
-		static wrapped_thread* get_current() { return current_worker; }
-
-		void push(task_type&& task) { queue_.push(std::forward<task_type>(task)); }
-
-		bool try_pop(task_type& task) { return queue_.pop(task); }
-
-		void wait(const std::atomic<bool>& running) { queue_.wait(running); }
-
-		void wait_for(chrono::milliseconds time, const std::atomic<bool>& running) { queue_.wait_for(time, running); }
-
-		void notify() { queue_.notify(); }
-
-		auto queue_size() const { return queue_.size(); }
-
-		auto get_slot() const { return slot_; }
-
-		// provide a way to steal tasks from this thread
 		bool try_steal(task_type& task) {
 			if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
 				return queue_.pop(task);
 			}
 			return false;
 		}
-
-		void set_cleanup_status(bool status) { cleanup_thread_ = status; }
-
-		bool should_cleanup() const { return cleanup_thread_; }
 
 	private:
 		wrapped_queue<Policy> queue_;
@@ -518,7 +492,6 @@ private:
 			for (size_t attempt = 0; attempt < max_attempts; ++attempt) {
 				auto victim_id = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
 
-				// avoid self
 				if (threads_[victim_id] && threads_[victim_id]->get_slot() != worker.get_slot()) {
 					if (threads_[victim_id]->try_steal(task)) {
 						return true;
@@ -539,8 +512,7 @@ private:
 			bool got_task = try_acquire_task(worker, task);
 
 			if (!running_) {
-				// exit after task is done
-				if (got_task) { 
+				if (got_task) {	
 					task.exec();
 					remaining_tasks_.fetch_sub(1);
 					pool_cv_.notify_all();
@@ -617,13 +589,13 @@ private:
 		if (token) {
 			task = std::make_shared<std::packaged_task<return_type()>>(
 				[func = std::forward<Func>(func),
-				args_tuple = std::make_tuple(std::forward<Args>(args)...),
-				token]() -> return_type {
-					if (token && token->is_cancelled()) {
-						throw std::runtime_error("The task was canceled.");
-					}
-					return std::apply(func, args_tuple);
-				}
+			 args_tuple = std::make_tuple(std::forward<Args>(args)...),
+			 token]() -> return_type {
+				 if (token && token->is_cancelled()) {
+					 throw std::runtime_error("The task was canceled.");
+				 }
+				 return std::apply(func, args_tuple);
+			 }
 			);
 		}
 		else {
@@ -633,11 +605,11 @@ private:
 		}
 
 		auto res = task->get_future();
-		if (wrapped_thread::is_worker() && (idle_threads_.load() == 0)) { // if we are in a worker thread and no idle threads are available
-			(*task)(); // execute the task immediately
+
+		if (wrapped_thread::is_worker() && (idle_threads_.load() == 0)) {
+			(*task)();
 			return res;
 		}
-
 
 		warpped_task wrapped{ [task]() { (*task)(); }, priority, token };
 		bool need_new_thread = false;
@@ -650,27 +622,63 @@ private:
 			if (t) {
 				t->push(std::move(wrapped));
 				t->start();
+				remaining_tasks_.fetch_add(1);
+				return res;
 			}
 		}
-		else {
-			if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
-				if (wrapped_thread::is_worker()) {
-					auto* current = wrapped_thread::get_current();
-					if (current) {
-						current->push(std::move(wrapped));
-						remaining_tasks_.fetch_add(1);
+
+		if constexpr (Policy & ThreadPoolPolicy::WORK_STEALING) {
+			if (wrapped_thread::is_worker()) {
+				auto* current = wrapped_thread::get_current();
+				if (thread_count_.load() <= 1) {
+					(*task)();
+					return res;
+				}
+				std::unique_lock lock(threads_mtx_);
+				if (thread_count_.load() > 1) {
+					size_t victim_index = 0;
+					size_t attempts = 0;
+					do {
+						victim_index = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
+						++attempts;
+					} while (attempts < 8 &&
+						(!threads_[victim_index] || threads_[victim_index]->get_slot() == current->get_slot()));
+
+					if (threads_[victim_index] && threads_[victim_index]->get_slot() != current->get_slot()) {
+						threads_[victim_index]->push(std::move(wrapped));
+					}
+					else {
+						lock.unlock();
+						(*task)();
 						return res;
 					}
 				}
-
+				else {
+					(*task)();
+					return res;
+				}
+			}
+			else {
 				std::unique_lock lock(threads_mtx_);
+				if (thread_count_.load() > 0) {
+					auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
+					threads_[slot]->push(std::move(wrapped));
+				}
+				else {
+					(*task)();
+					return res;
+				}
+			}
+		}
+		else {
+			std::unique_lock lock(threads_mtx_);
+			if (thread_count_.load() > 0) {
 				auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
 				threads_[slot]->push(std::move(wrapped));
 			}
 			else {
-				std::unique_lock lock(threads_mtx_);
-				auto slot = std::uniform_int_distribution<size_t>(0, thread_count_ - 1)(rng);
-				threads_[slot]->push(std::move(wrapped));
+				(*task)();
+				return res;
 			}
 		}
 
